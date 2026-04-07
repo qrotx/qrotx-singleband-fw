@@ -1,0 +1,16 @@
+# Build for Cortex-M4F (hard float ABI)
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+# probe-rs runner: flash and run via the Nucleo's on-board STLINK-V3
+runner = "probe-rs run --chip STM32G474RETx"
+
+rustflags = [
+    # cortex-m-rt linker script (includes memory.x)
+    "-C", "link-arg=-Tlink.x",
+    # custom .ccmram NOLOAD section (DMA buffers in Core-Coupled Memory)
+    "-C", "link-arg=-Tlink-sections.x",
+    # defmt RTT section placement
+    "-C", "link-arg=-Tdefmt.x",
+]

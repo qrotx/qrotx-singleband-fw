@@ -1,0 +1,69 @@
+[package]
+name = "qrotx-singleband-fw"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "qrotx single-band shortwave transmitter firmware for STM32G474RE"
+repository = "https://github.com/qrotx/qrotx-singleband-fw"
+
+[[bin]]
+name = "qrotx-singleband-fw"
+path = "src/main.rs"
+
+# ---------------------------------------------------------------------------
+# Embassy async framework (pin to a specific git rev for reproducible builds)
+# ---------------------------------------------------------------------------
+[dependencies]
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", features = [
+    "stm32g474re",   # target chip
+    "single-bank",   # STM32G474RE Nucleo factory default (DBANK option bit = 0)
+    "time-driver-any",
+    "exti",          # external interrupt support (PTT button, etc.)
+    "unstable-pac",  # raw PAC register access needed for HRTIM & runtime RCC
+] }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = [
+    "executor-thread",
+    "platform-cortex-m",
+] }
+embassy-time    = { git = "https://github.com/embassy-rs/embassy" }
+embassy-sync    = { git = "https://github.com/embassy-rs/embassy" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy" }
+
+# ---------------------------------------------------------------------------
+# ARM/Cortex-M runtime
+# ---------------------------------------------------------------------------
+cortex-m     = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt  = "0.7"
+
+# ---------------------------------------------------------------------------
+# Debug / logging (defmt over RTT, works with probe-rs)
+# ---------------------------------------------------------------------------
+defmt        = "0.3"
+defmt-rtt    = "0.4"
+panic-probe  = { version = "0.3", features = ["print-defmt"] }
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+static_cell  = "2"      # safe static allocation for async tasks
+heapless     = "0.8"    # fixed-capacity collections (no heap needed)
+
+# ---------------------------------------------------------------------------
+# Build dependencies — cc enables linking C object files (ARM DSP lib, etc.)
+# ---------------------------------------------------------------------------
+[build-dependencies]
+cc = "1"
+
+# ---------------------------------------------------------------------------
+# Release profile: size-optimised, keep debug info for probe-rs
+# ---------------------------------------------------------------------------
+[profile.release]
+opt-level         = "s"
+lto               = "fat"
+codegen-units     = 1
+debug             = true     # symbols for probe-rs stack traces
+overflow-checks   = false    # remove in release (checked by tests)
+
+[profile.dev]
+opt-level = 1                # some optimisation to keep stack usage sane
+debug     = true
