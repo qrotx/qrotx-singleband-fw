@@ -40,6 +40,7 @@ mod adc;
 mod clock;
 mod config;
 mod dma;
+mod dsp;
 mod hrtim;
 mod si5351;
 mod tasks;
