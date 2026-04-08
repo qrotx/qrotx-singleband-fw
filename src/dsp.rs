@@ -234,11 +234,72 @@ impl<const N: usize> BiquadState<N> {
 }
 
 // ---------------------------------------------------------------------------
+// Voice compressor
+// ---------------------------------------------------------------------------
+
+/// Compression threshold — envelope level above which gain reduction begins.
+const COMP_THRESHOLD:   f32 = 0.3;
+/// Compression ratio (4:1 — for every 4 dB over threshold, output rises 1 dB).
+const COMP_RATIO:       f32 = 4.0;
+/// Make-up gain applied after compression.
+const COMP_MAKEUP_GAIN: f32 = 1.5;
+
+/// Attack coefficient: 1 − exp(−1 / (FS × COMP_ATTACK))
+/// where FS = 20 000 Hz, COMP_ATTACK = 0.0002 s → exp(−0.25)
+const COMP_ATTACK_COEFF:  f32 = 0.22119922_f32;
+/// Release coefficient: 1 − exp(−1 / (FS × COMP_RELEASE))
+/// where FS = 20 000 Hz, COMP_RELEASE = 0.1 s → exp(−0.0005)
+const COMP_RELEASE_COEFF: f32 = 0.00049987503_f32;
+
+/// Per-call state for the envelope follower / gain computer.
+struct Compressor {
+    envelope: f32,
+    gain:     f32,
+}
+
+impl Compressor {
+    const fn new() -> Self {
+        Self { envelope: 0.0, gain: 1.0 }
+    }
+
+    fn process(
+        &mut self,
+        input:  &[f32; DECIMATED_LEN],
+        output: &mut [f32; DECIMATED_LEN],
+    ) {
+        for (out, &sample) in output.iter_mut().zip(input.iter()) {
+            let abs_sample = if sample < 0.0 { -sample } else { sample };
+
+            // Envelope follower with asymmetric attack / release.
+            if abs_sample > self.envelope {
+                self.envelope += COMP_ATTACK_COEFF  * (abs_sample - self.envelope);
+            } else {
+                self.envelope += COMP_RELEASE_COEFF * (abs_sample - self.envelope);
+            }
+
+            // Compute gain — reduce above threshold according to ratio.
+            if self.envelope > COMP_THRESHOLD {
+                let overshoot   = self.envelope / COMP_THRESHOLD;
+                let compressed  = 1.0 + (overshoot - 1.0) / COMP_RATIO;
+                self.gain       = COMP_THRESHOLD * compressed / self.envelope;
+            } else {
+                self.gain = 1.0;
+            }
+
+            // Apply compression + make-up gain, then hard-limit to ±1.
+            let s = sample * self.gain * COMP_MAKEUP_GAIN;
+            *out = s.clamp(-1.0, 1.0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Static filter instances — accessed only from the DSP task (single writer).
 // ---------------------------------------------------------------------------
-static mut DECIMATOR:  FirDecimate                  = FirDecimate::new();
-static mut HP_FILTER:  BiquadState<HIGHPASS_STAGES> = BiquadState::new();
-static mut LP_FILTER:  BiquadState<LOWPASS_STAGES>  = BiquadState::new();
+static mut DECIMATOR:   FirDecimate                  = FirDecimate::new();
+static mut HP_FILTER:   BiquadState<HIGHPASS_STAGES> = BiquadState::new();
+static mut COMPRESSOR:  Compressor                   = Compressor::new();
+static mut LP_FILTER:   BiquadState<LOWPASS_STAGES>  = BiquadState::new();
 
 // ---------------------------------------------------------------------------
 // Sample format conversion helpers
@@ -323,9 +384,9 @@ fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) {
     let mut hp_out = [0.0f32; DECIMATED_LEN];
     unsafe { HP_FILTER.process(&HIGHPASS_COEFFS, &audio, &mut hp_out) };
 
-    // --- Stage 3c: compression --- TODO ---
-    // Placeholder: pass through unchanged.
-    let compressed = hp_out;
+    // --- Stage 3c: compression ---
+    let mut compressed = [0.0f32; DECIMATED_LEN];
+    unsafe { COMPRESSOR.process(&hp_out, &mut compressed) };
 
     // --- Stage 3d: low-pass IIR (Chebyshev I, 2800 Hz) ---
     let mut lp_out = [0.0f32; DECIMATED_LEN];
