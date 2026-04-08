@@ -46,6 +46,7 @@ mod si5351;
 mod tasks;
 mod transmitter;
 
+use tasks::dsp::dsp_task;
 use tasks::radio::radio_task;
 use tasks::ui::ui_task;
 
@@ -144,6 +145,7 @@ fn main() -> ! {
     // -----------------------------------------------------------------------
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
+        spawner.spawn(dsp_task().unwrap());
         spawner.spawn(radio_task(i2c, tx_enable).unwrap());
         spawner.spawn(ui_task(ptt_pin, led).unwrap());
     });
