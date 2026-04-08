@@ -34,62 +34,116 @@
 use defmt::{debug, info};
 
 // ---------------------------------------------------------------------------
-// ADC1 initialisation stub
+// ADC1 initialisation
 // ---------------------------------------------------------------------------
 
-/// Initialise ADC1 for continuous triggered acquisition.
+/// Initialise ADC1 for triggered acquisition at 200 kHz.
 ///
-/// Steps (to be implemented via PAC writes or STM32G4 HAL):
-///   1. Enable ADC1 clock on AHB2.
-///   2. Calibrate ADC (single-ended).
-///   3. Configure channel 1 (PA0): 92.5 cycles sample time.
-///   4. Set external trigger: HRTIM_TRG1, rising edge.
-///   5. Set DMA: continuous requests enabled.
-///   6. Enable ADC.
-///   7. Configure DMA1_CH1: ADC1_DR → ADC_BUF, u16, circular, length=200.
-///   8. Enable DMA half-transfer and transfer-complete interrupts.
-///   9. Start ADC conversion (ADSTART).
+/// Steps per RM0440 §21.4.7:
+///   1. Enable ADC12 clock on AHB2; set synchronous clock = HCLK/4.
+///   2. Enable voltage regulator (ADVREGEN); wait T_ADCVREG_STUP = 20 µs.
+///   3. Run single-ended calibration; poll until complete.
+///   4. Configure CFGR: 12-bit right-aligned, HRTIM_TRG1 rising edge,
+///      DMA circular, overwrite on overrun.
+///   5. Set channel 1 sample time = 92.5 cycles.
+///   6. Set conversion sequence: 1 conversion, channel 1 (PA0).
+///   7. Enable ADC; wait ADRDY.
+///
+/// DMA1_CH1 (ADC1_DR → ADC_BUF) is configured separately.
+/// Call `start()` after DMA is running to begin conversions.
 pub fn init() {
-    // TODO: PAC register writes.
-    //
-    // Outline using embassy_stm32::pac:
-    //
-    // let rcc  = embassy_stm32::pac::RCC;
-    // let adc1 = embassy_stm32::pac::ADC1;
-    // let dma1 = embassy_stm32::pac::DMA1;
-    //
-    // // 1. Enable clocks.
-    // rcc.ahb2enr().modify(|w| w.set_adc12en(true));
-    //
-    // // 2. Exit deep-power-down and enable internal regulator.
-    // adc1.cr().modify(|w| { w.set_deeppwd(false); w.set_advregen(true); });
-    // // Wait TADCVREG_STUP (20 µs).
-    //
-    // // 3. Calibrate.
-    // adc1.cr().modify(|w| w.set_adcal(true));
-    // while adc1.cr().read().adcal() { cortex_m::asm::nop(); }
-    //
-    // // 4–6. Configure and enable.
-    // adc1.cfgr().write(|w| {
-    //     w.set_res(0b00);       // 12-bit
-    //     w.set_exten(0b01);     // rising edge trigger
-    //     w.set_extsel(0b01100); // HRTIM_TRG1 (check RM0440 Table 161)
-    //     w.set_dmaen(true);
-    //     w.set_dmacfg(true);    // circular DMA
-    //     w.set_ovrmod(true);    // overwrite on overrun
-    // });
-    // // Set sample time for channel 1 (SQ1 = 1, SQR1.L = 0).
-    // adc1.sqr1().write(|w| { w.set_sq1(1); w.set_l(0); });
-    // adc1.smpr1().modify(|w| w.set_smp1(0b110)); // 92.5 cycles
-    //
-    // // 7. DMA1_CH1 for ADC.
-    // // (Embassy HAL or direct DMAMUX + DMA register writes.)
-    //
-    // adc1.cr().modify(|w| w.set_aden(true));
-    // while !adc1.isr().read().adrdy() { cortex_m::asm::nop(); }
-    // adc1.cr().modify(|w| w.set_adstart(true));
+    use embassy_stm32::pac;
+    use embassy_stm32::pac::adc::vals::{Dmacfg, Dmaen, Exten, Ovrmod, Res, SampleTime};
+    use embassy_stm32::pac::adccommon::vals::Ckmode;
 
-    info!("adc: init stub — full register programming TODO");
+    let rcc  = pac::RCC;
+    let adc1 = pac::ADC1;
+
+    // ------------------------------------------------------------------
+    // 1. Enable ADC12 peripheral clock on AHB2.
+    //    Synchronous clock mode HCLK/4 must be set before ADEN=1.
+    // ------------------------------------------------------------------
+    rcc.ahb2enr().modify(|w| w.set_adc12en(true));
+    let _ = rcc.ahb2enr().read(); // flush
+
+    pac::ADC12_COMMON.ccr().modify(|w| w.set_ckmode(Ckmode::SYNC_DIV4));
+
+    // ------------------------------------------------------------------
+    // 2. Exit deep power-down, enable voltage regulator.
+    //    T_ADCVREG_STUP = 20 µs; at 170 MHz → 3400 cycles.
+    // ------------------------------------------------------------------
+    adc1.cr().modify(|w| {
+        w.set_deeppwd(false);
+        w.set_advregen(true);
+    });
+    cortex_m::asm::delay(3_400);
+
+    // ------------------------------------------------------------------
+    // 3. Single-ended calibration.  Must start with ADEN=0, ADCALDIF=0.
+    // ------------------------------------------------------------------
+    adc1.cr().modify(|w| w.set_adcal(true));
+    let mut timeout = 200_000u32;
+    while adc1.cr().read().adcal() {
+        cortex_m::asm::nop();
+        timeout -= 1;
+        if timeout == 0 {
+            defmt::error!("adc: calibration timeout");
+            break;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 4. Configuration register.
+    //    EXTSEL = 24 (0x18) = HRTIM1_ADCTRG1  (RM0440 Table 161).
+    // ------------------------------------------------------------------
+    adc1.cfgr().write(|w| {
+        w.set_res(Res::BITS12);
+        w.set_align(false);         // right-aligned
+        w.set_extsel(24);           // HRTIM1_ADCTRG1
+        w.set_exten(Exten::RISING_EDGE);
+        w.set_dmaen(Dmaen::ENABLE);
+        w.set_dmacfg(Dmacfg::CIRCULAR);
+        w.set_ovrmod(Ovrmod::OVERWRITE);
+        w.set_cont(false);          // triggered, not continuous
+        w.set_discen(false);
+    });
+
+    // ------------------------------------------------------------------
+    // 5. Sample time: channel 1 = 92.5 ADC clock cycles.
+    //    smpr() covers channels 0-9; index = channel number.
+    // ------------------------------------------------------------------
+    adc1.smpr().modify(|w| w.set_smp(1, SampleTime::CYCLES92_5));
+
+    // ------------------------------------------------------------------
+    // 6. Conversion sequence: 1 conversion, rank 1 = channel 1 (PA0).
+    // ------------------------------------------------------------------
+    adc1.sqr1().write(|w| {
+        w.set_l(0);    // 1 conversion (L = number_of_conversions - 1)
+        w.set_sq(0, 1); // rank 1 = channel 1
+    });
+
+    // ------------------------------------------------------------------
+    // 7. Enable ADC; wait for ADRDY.
+    // ------------------------------------------------------------------
+    adc1.cr().modify(|w| w.set_aden(true));
+    let mut timeout = 200_000u32;
+    while !adc1.isr().read().adrdy() {
+        cortex_m::asm::nop();
+        timeout -= 1;
+        if timeout == 0 {
+            defmt::error!("adc: ADRDY timeout");
+            break;
+        }
+    }
+
+    info!("adc: init done — waiting for DMA before ADSTART");
+}
+
+/// Start ADC conversions (ADSTART).  Call after DMA1_CH1 is configured
+/// and running, so the first trigger does not overflow the FIFO.
+pub fn start() {
+    embassy_stm32::pac::ADC1.cr().modify(|w| w.set_adstart(true));
+    defmt::debug!("adc: conversions started");
 }
 
 /// Stop ADC conversions and DMA (call before switching clocks or going idle).
