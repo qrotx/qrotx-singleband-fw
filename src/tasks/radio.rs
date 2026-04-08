@@ -67,6 +67,7 @@ pub async fn radio_task(
     hrtim::init();
     adc::init();
     dma::init();
+    crate::dsp::init();
     adc::start();
 
     // Si5351: set crystal load cap, leave all outputs disabled for now.

@@ -20,12 +20,22 @@
 //   [cordic + outphasing]  (100 × I, 100 × Q) Q31  →  100 × PwmSample — TODO
 //   write HRTIM ping-pong buffer half
 
-use crate::config::FRAME_SAMPLES;
+use embassy_stm32::pac;
+
+use crate::config::{FRAME_SAMPLES, PWM_PERIOD, TIMERC_PERIOD};
 use crate::hrtim::{
     adc_buf_first_half, adc_buf_second_half,
     hrtim_buf_first_half_mut, hrtim_buf_second_half_mut,
     PwmSample,
 };
+
+// ---------------------------------------------------------------------------
+// CORDIC outphasing constants
+// ---------------------------------------------------------------------------
+
+/// Transmission amplitude — sets the PA supply voltage via the buck converter.
+/// Expressed in Timer C ticks (TIMERC_PERIOD = 850).  Higher = more TX power.
+const AMPLITUDE: u32 = TIMERC_PERIOD / 2; // = 425 ticks
 
 // ---------------------------------------------------------------------------
 // FIR filter constants
@@ -543,6 +553,56 @@ fn f32_to_q31(sample: f32) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+// CORDIC initialisation and per-sample calculation
+// ---------------------------------------------------------------------------
+
+/// Initialise the CORDIC peripheral for MODULUS function (Q1.31, 32-bit, 2 args / 2 results).
+///
+/// Must be called once during hardware init, before `process_first_half` /
+/// `process_second_half`.  Uses PAC directly, consistent with HRTIM/ADC/DMA.
+///
+/// CORDIC config (matching C HAL `CORDIC_FUNCTION_MODULUS`):
+///   Function  : MODULUS  (ARG1=I, ARG2=Q → RES1=|Z|, RES2=∠Z)
+///   Scale     : 0        (no input/output scaling)
+///   Precision : 15       (15 × 4 = 60 iterations, ≥ 19-bit accuracy)
+///   ArgSize   : 32-bit   (Q1.31)
+///   ResSize   : 32-bit   (Q1.31)
+///   NbWrite   : 2        (one ARG1 + ARG2 write pair triggers a calculation)
+///   NbRead    : 2        (read modulus then phase)
+pub fn init() {
+    // Enable CORDIC clock on AHB1.
+    pac::RCC.ahb1enr().modify(|w| w.set_cordicen(true));
+    // Brief reset to put CORDIC in a known state.
+    pac::RCC.ahb1rstr().modify(|w| w.set_cordicrst(true));
+    pac::RCC.ahb1rstr().modify(|w| w.set_cordicrst(false));
+
+    pac::CORDIC.csr().write(|w| {
+        w.set_func(pac::cordic::vals::Func::from_bits(3)); // MODULUS
+        w.set_precision(pac::cordic::vals::Precision::from_bits(15)); // 60 iterations
+        w.set_scale(pac::cordic::vals::Scale::from_bits(0)); // no scaling
+        w.set_nargs(pac::cordic::vals::Num::NUM2); // write I then Q
+        w.set_nres(pac::cordic::vals::Num::NUM2);  // read modulus then phase
+        w.set_argsize(pac::cordic::vals::Size::BITS32);
+        w.set_ressize(pac::cordic::vals::Size::BITS32);
+    });
+}
+
+/// Blocking CORDIC MODULUS calculation: (I, Q) → (modulus, phase), all Q1.31.
+///
+/// Writes ARG1=I then ARG2=Q (ARG2 write triggers the calculation), then
+/// reads modulus and phase once RRDY is set.
+/// Typical latency: 60 CORDIC iterations ≈ 60 / SYSCLK ≈ 0.35 µs at 170 MHz.
+#[inline]
+fn cordic_modulus(i: i32, q: i32) -> (i32, i32) {
+    pac::CORDIC.wdata().write_value(i as u32); // ARG1 = I (preloaded)
+    pac::CORDIC.wdata().write_value(q as u32); // ARG2 = Q (triggers calc)
+    while !pac::CORDIC.csr().read().rrdy() {}   // wait for result ready
+    let modulus = pac::CORDIC.rdata().read() as i32; // primary result
+    let phase   = pac::CORDIC.rdata().read() as i32; // secondary result
+    (modulus, phase)
+}
+
+// ---------------------------------------------------------------------------
 // Public pipeline entry points — called from the DSP Embassy task
 // ---------------------------------------------------------------------------
 
@@ -643,19 +703,42 @@ fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) {
 
     // `interp_i` and `interp_q` are Q31 at 200 kHz, ready for CORDIC.
 
-    // --- Stage 5c: CORDIC polar conversion + outphasing → HRTIM compare values --- TODO ---
+    // --- Stage 5c: CORDIC polar conversion + outphasing → HRTIM compare values ---
+    //
+    // CORDIC MODULUS maps (I, Q) → (modulus, phase), both Q1.31.
+    //   modulus : magnitude of the analytic signal, range [0, 1)
+    //   phase   : phase angle, range [-1, +1) representing [-π, +π)
+    //
+    // Timer C CMP1 (buck converter duty → PA supply voltage):
+    //   Scales modulus Q1.31 to [3, AMPLITUDE] TIMERC ticks.
+    //   (modulus >> 15) gives ~Q1.15; × AMPLITUDE >> 16 gives integer ticks.
+    //   Hard minimum of 3: HRTIM does not allow triggers in the first 3 ticks.
+    //
+    // Timer A/B CMP1 (outphasing angle):
+    //   Maps phase [-1, +1] (= [-π, +π]) to a tick offset in [0, PWM_PERIOD).
+    //   Phase is negated: a positive phase means an earlier crossover, so the
+    //   negation maps the signal phase correctly to the HRTIM timing.
+    //   CMP2 = (CMP1 + PWM_PERIOD/2) % PWM_PERIOD maintains 180° complement.
+    for (i, slot) in hrtim_out.iter_mut().enumerate() {
+        let (modulus, phase) = cordic_modulus(interp_i[i], interp_q[i]);
 
-    // Placeholder: fill HRTIM buffer with silence until outphasing is wired up.
-    let _ = (interp_i, interp_q);
-    use crate::config::PWM_PERIOD;
-    let silence = PwmSample {
-        tim_a_cmp1: (PWM_PERIOD / 4) as u32,
-        tim_a_cmp2: (PWM_PERIOD * 3 / 4) as u32,
-        tim_b_cmp1: (PWM_PERIOD / 4) as u32,
-        tim_b_cmp2: (PWM_PERIOD * 3 / 4) as u32,
-        tim_c_cmp1: 1,
-    };
-    for slot in hrtim_out.iter_mut() {
-        *slot = silence;
+        // Timer C CMP1: modulus → PA bias ticks.
+        let mag = (((modulus as i64) >> 15) * AMPLITUDE as i64) >> 16;
+        let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
+
+        // Timer A/B CMP1/CMP2: phase → outphasing angle in PWM ticks.
+        let phase_ticks =
+            (((-(phase as i64)) >> 15) * (PWM_PERIOD as i64 / 2) >> 16)
+            + PWM_PERIOD as i64 / 2;
+        let ta_cmp1 = (phase_ticks as u32) % PWM_PERIOD;
+        let ta_cmp2 = (ta_cmp1 + PWM_PERIOD / 2) % PWM_PERIOD;
+
+        *slot = PwmSample {
+            tim_a_cmp1: ta_cmp1,
+            tim_a_cmp2: ta_cmp2,
+            tim_b_cmp1: ta_cmp1,
+            tim_b_cmp2: ta_cmp2,
+            tim_c_cmp1: tc_cmp1,
+        };
     }
 }
