@@ -55,9 +55,16 @@ pub fn init() {
     use embassy_stm32::pac;
     use embassy_stm32::pac::adc::vals::{Dmacfg, Dmaen, Exten, Ovrmod, Res, SampleTime};
     use embassy_stm32::pac::adccommon::vals::Ckmode;
+    use embassy_stm32::pac::gpio::vals::Moder;
 
     let rcc  = pac::RCC;
     let adc1 = pac::ADC1;
+
+    // ------------------------------------------------------------------
+    // 0. PA0 → ANALOG mode (ADC1_IN1).
+    //    GPIOA clock already enabled by embassy_stm32::init().
+    // ------------------------------------------------------------------
+    pac::GPIOA.moder().modify(|w| w.set_moder(0, Moder::ANALOG));
 
     // ------------------------------------------------------------------
     // 1. Enable ADC12 peripheral clock on AHB2.

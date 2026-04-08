@@ -143,6 +143,18 @@ pub unsafe fn write_hrtim_sample(index: usize, sample: PwmSample) {
     HRTIM_BUF[index] = sample;
 }
 
+/// Raw pointer to the start of ADC_BUF for DMA configuration.
+/// Safe to call; dereferencing the returned pointer requires unsafe.
+pub fn adc_buf_ptr() -> *mut u16 {
+    core::ptr::addr_of_mut!(ADC_BUF) as *mut u16
+}
+
+/// Raw pointer to the start of HRTIM_BUF for DMA configuration.
+/// The buffer is repr(C) PwmSample (5 × u32); cast to *mut u32 for DMA word transfers.
+pub fn hrtim_buf_ptr() -> *mut u32 {
+    core::ptr::addr_of_mut!(HRTIM_BUF) as *mut u32
+}
+
 // ---------------------------------------------------------------------------
 // HRTIM initialisation
 // ---------------------------------------------------------------------------

@@ -32,12 +32,14 @@ use embassy_stm32::rcc::{
     AHBPrescaler, APBPrescaler, Pll, PllMul, PllPreDiv, PllRDiv, PllSource, Sysclk,
 };
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{bind_interrupts, dma, exti, i2c, interrupt, peripherals, Config};
+use embassy_stm32::dma as embassy_dma;
+use embassy_stm32::{bind_interrupts, exti, i2c, interrupt, peripherals, Config};
 use static_cell::StaticCell;
 
 mod adc;
 mod clock;
 mod config;
+mod dma;
 mod hrtim;
 mod si5351;
 mod tasks;
@@ -55,8 +57,8 @@ bind_interrupts!(struct Irqs {
     I2C1_ER      => i2c::ErrorInterruptHandler<peripherals::I2C1>;
     // DMA1 channel interrupts for I2C1 TX (CH6) and RX (CH7).
     // On STM32G474 the interrupt typelevel names use _CHANNEL suffix.
-    DMA1_CHANNEL6 => dma::InterruptHandler<peripherals::DMA1_CH6>;
-    DMA1_CHANNEL7 => dma::InterruptHandler<peripherals::DMA1_CH7>;
+    DMA1_CHANNEL6 => embassy_dma::InterruptHandler<peripherals::DMA1_CH6>;
+    DMA1_CHANNEL7 => embassy_dma::InterruptHandler<peripherals::DMA1_CH7>;
     // EXTI0 for PTT button (PB0).
     EXTI0        => exti::InterruptHandler<interrupt::typelevel::EXTI0>;
 });
