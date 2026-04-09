@@ -14,6 +14,11 @@ repository = "https://github.com/qrotx/qrotx-singleband-fw"
 name = "qrotx-singleband-fw"
 path = "src/main.rs"
 
+[[test]]
+name = "hw_tests"
+path = "tests/hw_tests.rs"
+harness = false
+
 # ---------------------------------------------------------------------------
 # Embassy async framework (pin to a specific git rev for reproducible builds)
 # ---------------------------------------------------------------------------
@@ -52,6 +57,7 @@ panic-probe  = { version = "0.3", features = ["print-defmt"] }
 static_cell  = "2"      # safe static allocation for async tasks
 heapless     = "0.8"    # fixed-capacity collections (no heap needed)
 dsp-core     = { path = "dsp-core" }
+defmt-test   = "0.3"    # hardware-in-the-loop test framework
 
 # ---------------------------------------------------------------------------
 # Build dependencies — cc enables linking C object files (ARM DSP lib, etc.)
