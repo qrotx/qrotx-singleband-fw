@@ -136,13 +136,6 @@ pub unsafe fn hrtim_buf_second_half_mut() -> &'static mut [PwmSample] {
     &mut HRTIM_BUF[FRAME_SAMPLES..]
 }
 
-/// Write a complete PwmSample at `index` (0..DMA_BUF_LEN) in the HRTIM buffer.
-/// Called by the DSP pipeline to fill the buffer.
-#[inline]
-pub unsafe fn write_hrtim_sample(index: usize, sample: PwmSample) {
-    HRTIM_BUF[index] = sample;
-}
-
 /// Raw pointer to the start of ADC_BUF for DMA configuration.
 /// Safe to call; dereferencing the returned pointer requires unsafe.
 pub fn adc_buf_ptr() -> *mut u16 {

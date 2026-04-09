@@ -637,6 +637,9 @@ pub unsafe fn process_second_half() {
 ///
 /// `adc_in`   : FRAME_SAMPLES raw ADC u16 samples (200 kHz)
 /// `hrtim_out`: FRAME_SAMPLES PwmSample destination (200 kHz)
+// Safety: all static filter instances are owned exclusively by the single DSP task;
+// no other task or interrupt creates a reference to them while this runs.
+#[allow(static_mut_refs)]
 fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) {
     debug_assert_eq!(adc_in.len(),    FRAME_SAMPLES);
     debug_assert_eq!(hrtim_out.len(), FRAME_SAMPLES);

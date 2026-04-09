@@ -63,7 +63,6 @@ pub const PLL_N_TX: u32 = PLL_NET_MUL * 2;
 // ---------------------------------------------------------------------------
 // Internal-clock (idle) PLL: HSI (16 MHz) × 21 / 2 = 168 MHz
 // ---------------------------------------------------------------------------
-pub const SYSCLK_IDLE_HZ: u32 = 168_000_000;
 pub const PLL_N_IDLE: u32 = 21; // PLLM=1, PLLN=21, PLLR=2 → 168 MHz
 
 // ---------------------------------------------------------------------------
@@ -82,12 +81,6 @@ pub const SI5351_XTAL_HZ: u32 = 25_000_000;
 
 /// ADC sampling rate (driven by HRTIM Timer-C at ~200 kHz).
 pub const AUDIO_RATE_HZ: u32 = 200_000;
-
-/// DSP processing rate after 10× decimation.
-pub const DSP_RATE_HZ: u32 = 20_000;
-
-/// Decimation factor.
-pub const DECIMATE: u32 = AUDIO_RATE_HZ / DSP_RATE_HZ;
 
 /// DMA frame duration (µs).  Half-transfer interrupt fires every FRAME_US/2.
 pub const FRAME_US: u32 = 500; // 0.5 ms

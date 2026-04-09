@@ -31,7 +31,7 @@
 //                              ▼
 //                     HRTIM_BUF → DMA1_CH5 → HRTIM Timer-C CMP1
 
-use defmt::{debug, info};
+use defmt::info;
 
 // ---------------------------------------------------------------------------
 // ADC1 initialisation
@@ -153,29 +153,4 @@ pub fn start() {
     defmt::debug!("adc: conversions started");
 }
 
-/// Stop ADC conversions and DMA (call before switching clocks or going idle).
-pub fn stop() {
-    // TODO: ADSTP, disable DMA, disable ADC.
-    debug!("adc: stopped (stub)");
-}
 
-// ---------------------------------------------------------------------------
-// DSP pipeline helpers (stubs for the 200 kHz → 20 kHz → 200 kHz chain)
-// ---------------------------------------------------------------------------
-
-/// Process one 100-sample frame of raw ADC data.
-///
-/// Called from the DMA half/full-transfer handler.
-/// `raw` : slice of `FRAME_SAMPLES` u16 ADC samples (200 kHz rate).
-/// Returns: nothing yet — output will be written to the HRTIM buffer.
-///
-/// Future implementation:
-///   1. Apply DC-blocking IIR filter.
-///   2. Decimate 10:1 with FIR anti-alias (→ 20 kHz, 10 samples).
-///   3. Compute SSB I/Q via Hilbert transform (FMAC or software).
-///   4. CORDIC sin/cos for phase → outphasing CMP1/CMP2 values.
-///   5. Interpolate 10:1 back to 200 kHz (→ 100 samples).
-///   6. Write to HRTIM DMA buffer half.
-pub fn process_frame(_raw: &[u16]) {
-    // TODO: DSP chain.
-}

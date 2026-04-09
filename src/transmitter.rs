@@ -73,22 +73,6 @@ static TX_STATE: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(TxState::Idle as u8);
 
 impl TxState {
-    /// Map the raw atomic byte back to the enum.
-    pub fn current() -> Self {
-        match core::sync::atomic::AtomicU8::load(
-            &TX_STATE,
-            core::sync::atomic::Ordering::Relaxed,
-        ) {
-            0 => TxState::Idle,
-            1 => TxState::ConfiguringClock,
-            2 => TxState::WaitingForLock,
-            3 => TxState::SwitchingClock,
-            4 => TxState::Transmitting,
-            5 => TxState::ShuttingDown,
-            _ => TxState::Idle,
-        }
-    }
-
     pub(crate) fn set(s: TxState) {
         core::sync::atomic::AtomicU8::store(
             &TX_STATE,

@@ -53,12 +53,14 @@ const PLLB_RESET: u8 = 1 << 7;
 // ---------------------------------------------------------------------------
 
 #[derive(Copy, Clone, Debug, defmt::Format)]
+#[allow(dead_code)]
 pub enum Pll {
     A,
     B,
 }
 
 #[derive(Copy, Clone, Debug, defmt::Format)]
+#[allow(dead_code)]
 pub enum ClkOut {
     Clk0,
     Clk1,
