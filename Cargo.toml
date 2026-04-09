@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "dsp-core"]
+resolver = "2"
+
 [package]
 name = "qrotx-singleband-fw"
 version = "0.1.0"
@@ -47,6 +51,7 @@ panic-probe  = { version = "0.3", features = ["print-defmt"] }
 # ---------------------------------------------------------------------------
 static_cell  = "2"      # safe static allocation for async tasks
 heapless     = "0.8"    # fixed-capacity collections (no heap needed)
+dsp-core     = { path = "dsp-core" }
 
 # ---------------------------------------------------------------------------
 # Build dependencies — cc enables linking C object files (ARM DSP lib, etc.)
