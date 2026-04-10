@@ -15,7 +15,7 @@
 //   test_hrtim_timer_running — Timer C counter advances after init
 //   test_adc_dma_fires       — PROCESS_FIRST_HALF flag set within 2 ms
 //   test_adc_nonzero_samples — ADC buffer contains non-zero samples
-//   test_dma_rate            — ~20 half-transfer events in 10 ms
+//   test_dma_rate            — ~10 full-transfer events in 10 ms
 
 #![no_std]
 #![no_main]
@@ -102,6 +102,10 @@ mod tests {
             r.apb2_pre = APBPrescaler::DIV1;
         }
         let p = embassy_stm32::init(rcc);
+
+        // Enable DWT cycle counter for accurate spin-independent timing.
+        let mut cp = cortex_m::Peripherals::take().unwrap();
+        cp.DWT.enable_cycle_counter();
 
         // Initialise hardware in the same order as radio_task.
         hrtim::init();
@@ -227,11 +231,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 5: DMA transfer rate ≈ 20 events per 10 ms
+    // Test 5: DMA transfer rate ≈ 10 TC events per 10 ms
     //
-    // Each PROCESS_SECOND_HALF flag set = one full-buffer completion = 0.5 ms.
-    // Over 10 ms we expect ~20 events.  Accept 15–25 to tolerate spin-loop
-    // timing imprecision.
+    // ADC_DMA_LEN = 2 × FRAME_SAMPLES = 200 halfwords at 200 kHz → 1 ms per
+    // full buffer cycle.  Each PROCESS_SECOND_HALF (TC) flag set equals one
+    // full-buffer completion.  Over 10 ms we expect ~10 events.
+    // Accept 8–12 to allow for ±1 event at window boundaries.
     // -----------------------------------------------------------------------
     #[test]
     fn test_dma_rate(_state: &mut State) {
@@ -240,18 +245,22 @@ mod tests {
         PROCESS_SECOND_HALF.store(false, Ordering::Relaxed);
         let mut count = 0u32;
 
-        // 10 ms = 10 000 × 1 µs iterations.
-        for _ in 0..10_000 {
-            spin(168); // ~1 µs
+        // Use DWT cycle counter for an accurate 10 ms window regardless of
+        // debug/release build timing.  168 MHz × 10 ms = 1_680_000 cycles.
+        let start = cortex_m::peripheral::DWT::cycle_count();
+        loop {
             if PROCESS_SECOND_HALF.load(Ordering::Acquire) {
                 PROCESS_SECOND_HALF.store(false, Ordering::Release);
                 count += 1;
             }
+            if cortex_m::peripheral::DWT::cycle_count().wrapping_sub(start) >= 1_680_000 {
+                break;
+            }
         }
 
         info!("DMA events in 10 ms: {}", count);
-        defmt::assert!(count >= 15, "Too few DMA events: {} (expected ~20)", count);
-        defmt::assert!(count <= 25, "Too many DMA events: {} (expected ~20)", count);
+        defmt::assert!(count >= 8,  "Too few DMA events: {} (expected ~10)", count);
+        defmt::assert!(count <= 12, "Too many DMA events: {} (expected ~10)", count);
 
         info!("test_dma_rate: PASS");
     }
