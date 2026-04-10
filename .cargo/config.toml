@@ -9,8 +9,9 @@ runner = "probe-rs run --chip STM32G474RETx"
 rustflags = [
     # cortex-m-rt linker script (includes memory.x)
     "-C", "link-arg=-Tlink.x",
-    # custom .ccmram NOLOAD section (DMA buffers in Core-Coupled Memory)
-    "-C", "link-arg=-Tlink-sections.x",
     # defmt RTT section placement
     "-C", "link-arg=-Tdefmt.x",
 ]
+
+[env]
+DEFMT_LOG = "debug"

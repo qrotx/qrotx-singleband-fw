@@ -32,7 +32,7 @@
 //
 // DMA buffer layout
 // -----------------
-// One double-buffer in CCMRAM (ping-pong, half-transfer ISR):
+// One double-buffer in SRAM1 (ping-pong, half-transfer ISR):
 //
 //   HRTIM_BUF  [2 × FRAME_SAMPLES] PwmSample  — DMA1_CH5 → HRTIM BDMADR
 //   ADC_BUF    [2 × FRAME_SAMPLES] u16         — ADC1 → DMA1_CH1 (configured in adc.rs)
@@ -85,10 +85,9 @@ pub struct PwmSample {
 // ---------------------------------------------------------------------------
 const DMA_BUF_LEN: usize = FRAME_SAMPLES * 2;
 
-/// HRTIM burst-DMA double-buffer in CCMRAM (tightly-coupled for lowest DMA latency).
+/// HRTIM burst-DMA double-buffer in SRAM1.
 /// Each element is one PwmSample (5 × u32 = 20 bytes).
 /// Loaded to HRTIM1.BDMADR at 200 kHz by DMA1_CH5 (configured in adc.rs).
-#[link_section = ".ccmram"]
 static mut HRTIM_BUF: [PwmSample; DMA_BUF_LEN] = [PwmSample {
     tim_a_cmp1: 0,
     tim_a_cmp2: 0,
@@ -99,7 +98,6 @@ static mut HRTIM_BUF: [PwmSample; DMA_BUF_LEN] = [PwmSample {
 
 /// Audio ADC samples (u16, 12-bit right-aligned).
 /// DMA1_CH1: ADC1 → this buffer, circular, halfword (configured in adc.rs).
-#[link_section = ".ccmram"]
 static mut ADC_BUF: [u16; DMA_BUF_LEN] = [0u16; DMA_BUF_LEN];
 
 // ---------------------------------------------------------------------------

@@ -22,12 +22,6 @@ fn main() {
         .write_all(include_bytes!("memory.x"))
         .unwrap();
 
-    // Publish link-sections.x (custom .ccmram section for NOLOAD DMA buffers).
-    File::create(out.join("link-sections.x"))
-        .unwrap()
-        .write_all(include_bytes!("link-sections.x"))
-        .unwrap();
-
     println!("cargo:rustc-link-search={}", out.display());
 
     // -----------------------------------------------------------------------
@@ -56,5 +50,4 @@ fn main() {
     // Re-run this script only when these files change.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=memory.x");
-    println!("cargo:rerun-if-changed=link-sections.x");
 }
