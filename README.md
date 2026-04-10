@@ -4,6 +4,10 @@ Firmware for the qrotx single-band shortwave SSB transmitter, targeting the
 **STM32G474RETx** Cortex-M4F microcontroller on a Nucleo-G474RE development
 board.
 
+WARNING! This is work in progress. It builds and both host unit tests and
+hardware-in-the-loop tests run and pass, but actual PWM signal generation has
+not yet been tested.
+
 ## License
 
 This program is free software: you can redistribute it and/or modify it under
