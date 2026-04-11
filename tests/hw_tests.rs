@@ -103,10 +103,6 @@ mod tests {
         }
         let p = embassy_stm32::init(rcc);
 
-        // Enable DWT cycle counter for accurate spin-independent timing.
-        let mut cp = cortex_m::Peripherals::take().unwrap();
-        cp.DWT.enable_cycle_counter();
-
         // Initialise hardware in the same order as radio_task.
         hrtim::init();
         adc::init();
@@ -241,6 +237,18 @@ mod tests {
     #[test]
     fn test_dma_rate(_state: &mut State) {
         info!("test: DMA transfer rate");
+
+        // Enable DWT CYCCNT via direct register writes (bypasses the cortex-m
+        // singleton API which may already be consumed by the runtime).
+        // DEMCR[24] = TRCENA enables the DWT/ITM trace macrocell.
+        // DWT_CTRL[0] = CYCCNTENA enables the cycle counter.
+        unsafe {
+            let demcr = 0xE000_EDFC as *mut u32;
+            demcr.write_volatile(demcr.read_volatile() | (1 << 24)); // TRCENA
+            (0xE000_1004 as *mut u32).write_volatile(0);             // reset CYCCNT
+            let ctrl = 0xE000_1000 as *mut u32;
+            ctrl.write_volatile(ctrl.read_volatile() | 1);           // CYCCNTENA
+        }
 
         PROCESS_SECOND_HALF.store(false, Ordering::Relaxed);
         let mut count = 0u32;
