@@ -41,6 +41,7 @@ mod clock;
 mod config;
 mod dma;
 mod dsp;
+mod dsp_ffi;
 mod hrtim;
 mod si5351;
 mod tasks;

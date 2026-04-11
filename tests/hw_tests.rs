@@ -38,12 +38,13 @@ use embassy_stm32::{bind_interrupts, i2c, peripherals, Config};
 use panic_probe as _;
 
 // Modules shared with the firmware (included by path to avoid a lib crate).
-#[path = "../src/config.rs"]  mod config;
-#[path = "../src/hrtim.rs"]   mod hrtim;
-#[path = "../src/adc.rs"]     mod adc;
-#[path = "../src/dma.rs"]     mod dma;
-#[path = "../src/dsp.rs"]     mod dsp;
-#[path = "../src/si5351.rs"]  mod si5351;
+#[path = "../src/config.rs"]   mod config;
+#[path = "../src/hrtim.rs"]    mod hrtim;
+#[path = "../src/adc.rs"]      mod adc;
+#[path = "../src/dma.rs"]      mod dma;
+#[path = "../src/dsp_ffi.rs"]  mod dsp_ffi;
+#[path = "../src/dsp.rs"]      mod dsp;
+#[path = "../src/si5351.rs"]   mod si5351;
 
 use hrtim::{PROCESS_FIRST_HALF, PROCESS_SECOND_HALF};
 use config::SI5351_I2C_ADDR;

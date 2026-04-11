@@ -25,27 +25,54 @@ fn main() {
     println!("cargo:rustc-link-search={}", out.display());
 
     // -----------------------------------------------------------------------
-    // 2. C / assembler sources (uncomment when ARM DSP library is added).
+    // 2. CMSIS-DSP filtering functions.
     //
-    //    Typical usage with CMSIS-DSP:
-    //      • Clone / copy the CMSIS pack into c_src/
-    //      • Uncomment the block below and adjust include paths.
-    //      • Add `extern "C" { ... }` declarations in src/dsp.rs.
-    //
+    //    Add the submodule first:
+    //      git submodule add https://github.com/ARM-software/CMSIS-DSP c_src/CMSIS-DSP
+    // -----------------------------------------------------------------------
+    cc::Build::new()
+        .flag("-mcpu=cortex-m4")
+        .flag("-mfpu=fpv4-sp-d16")
+        .flag("-mfloat-abi=hard")
+        .flag("-mthumb")
+        .flag("-O2")
+        .flag("-w")                             // suppress third-party warnings
+        .define("ARM_MATH_CM4",      None)
+        .define("__FPU_PRESENT",     "1")
+        .define("ARM_MATH_LOOPUNROLL", None)    // enable 4× loop unrolling
+        .define("__GNUC_PYTHON__",   None)      // skip cmsis_compiler.h (CMSIS-Core not submodule'd)
+        .include("c_src/CMSIS-DSP/Include")
+        .include("c_src/CMSIS-DSP/PrivateInclude")
+        .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_decimate_q31.c")
+        .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_decimate_init_q31.c")
+        .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_interpolate_q31.c")
+        .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_interpolate_init_q31.c")
+        .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_biquad_cascade_df2T_f32.c")
+        .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_biquad_cascade_df2T_init_f32.c")
+        .compile("cmsis_dsp");
+
+    println!("cargo:rerun-if-changed=c_src/CMSIS-DSP");
+
+    // -----------------------------------------------------------------------
+    // 3. Custom SSB filter (based on CMSIS-DSP) — add file before enabling.
+    //    Place your implementation at c_src/ssb_filter.c (header: ssb_filter.h).
+    // -----------------------------------------------------------------------
     // cc::Build::new()
-    //     .file("c_src/arm_dsp_wrapper.c")
     //     .flag("-mcpu=cortex-m4")
     //     .flag("-mfpu=fpv4-sp-d16")
     //     .flag("-mfloat-abi=hard")
     //     .flag("-mthumb")
     //     .flag("-O2")
-    //     .flag("-DARM_MATH_CM4")
-    //     .include("c_src/CMSIS/DSP/Include")
-    //     .include("c_src/CMSIS/Core/Include")
-    //     .compile("arm_dsp_wrapper");
+    //     .define("ARM_MATH_CM4", None)
+    //     .define("__FPU_PRESENT", "1")
+    //     .define("__GNUC_PYTHON__", None)
+    //     .include("c_src/CMSIS-DSP/Include")
+    //     .include("c_src")
+    //     .file("c_src/ssb_filter.c")
+    //     .compile("ssb_filter");
     //
-    // println!("cargo:rustc-link-lib=static=arm_dsp_wrapper");
-    // -----------------------------------------------------------------------
+    // println!("cargo:rerun-if-changed=c_src/ssb_filter.c");
+    // println!("cargo:rerun-if-changed=c_src/ssb_filter.h");
 
     // Re-run this script only when these files change.
     println!("cargo:rerun-if-changed=build.rs");
