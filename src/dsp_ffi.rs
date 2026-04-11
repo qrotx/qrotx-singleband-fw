@@ -12,7 +12,7 @@
 
 use dsp_core::{
     DECIMATED_LEN, FIR_DECIMATE_FACTOR, FIR_NUM_TAPS,
-    FRAME_SAMPLES, HIGHPASS_STAGES, LOWPASS_STAGES,
+    FRAME_SAMPLES, HIGHPASS_STAGES, LOWPASS_STAGES, SSB_FILTER_TAPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -29,6 +29,9 @@ pub const FIR_INTERP_STATE_LEN: usize = FIR_NUM_TAPS / FIR_DECIMATE_FACTOR + DEC
 pub const BIQUAD_HP_STATE_LEN: usize = 2 * HIGHPASS_STAGES; // 4
 pub const BIQUAD_LP_STATE_LEN: usize = 2 * LOWPASS_STAGES;  // 4
 
+/// SSB FIR state: numTaps + blockSize − 1 = 257 + 10 − 1 = 266.
+pub const SSB_STATE_LEN: usize = SSB_FILTER_TAPS + DECIMATED_LEN - 1;
+
 // ---------------------------------------------------------------------------
 // Instance structs — layout mirrors the C typedef in arm_math.h.
 //
@@ -38,6 +41,10 @@ pub const BIQUAD_LP_STATE_LEN: usize = 2 * LOWPASS_STAGES;  // 4
 //
 // arm_biquad_cascade_df2T_instance_f32:
 //   { uint32_t numStages, float32_t* pState, const float32_t* pCoeffs }
+//   = 12 bytes.
+//
+// arm_fir_instance_f32 (reused for arm_fir_ssb_f32):
+//   { uint16_t numTaps, [2-byte pad], float32_t* pState, const float32_t* pCoeffs }
 //   = 12 bytes.
 // ---------------------------------------------------------------------------
 
@@ -55,6 +62,13 @@ pub struct ArmFirInterpolateInstanceQ31 {
     pub phase_length: u16,        // taps per polyphase sub-filter = numTaps/L
     pub p_coeffs:     *const i32, // const q31_t* — prototype filter coefficients
     pub p_state:      *mut i32,   // q31_t*       — delay line (FIR_INTERP_STATE_LEN)
+}
+
+#[repr(C)]
+pub struct ArmFirInstanceF32 {
+    pub num_taps: u16,        // number of filter taps
+    pub p_state:  *mut f32,   // float32_t* — state buffer (numTaps + blockSize − 1)
+    pub p_coeffs: *const f32, // const float32_t* — interleaved {real, imag} coefficients
 }
 
 #[repr(C)]
@@ -125,6 +139,16 @@ extern "C" {
         s:          *const ArmBiquadCascadeDf2TInstanceF32,
         p_src:      *const f32,
         p_dst:      *mut f32,
+        block_size: u32,
+    );
+
+    /// Run the SSB analytic FIR filter, producing I and Q outputs simultaneously.
+    /// Uses arm_fir_instance_f32 with interleaved {real, imag} coefficients.
+    pub fn arm_fir_ssb_f32(
+        s:          *const ArmFirInstanceF32,
+        p_src:      *const f32,
+        p_dst_i:    *mut f32,
+        p_dst_q:    *mut f32,
         block_size: u32,
     );
 }

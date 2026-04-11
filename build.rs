@@ -54,25 +54,24 @@ fn main() {
     println!("cargo:rerun-if-changed=c_src/CMSIS-DSP");
 
     // -----------------------------------------------------------------------
-    // 3. Custom SSB filter (based on CMSIS-DSP) — add file before enabling.
-    //    Place your implementation at c_src/ssb_filter.c (header: ssb_filter.h).
+    // 3. Custom SSB filter (arm_fir_ssb_f32).
     // -----------------------------------------------------------------------
-    // cc::Build::new()
-    //     .flag("-mcpu=cortex-m4")
-    //     .flag("-mfpu=fpv4-sp-d16")
-    //     .flag("-mfloat-abi=hard")
-    //     .flag("-mthumb")
-    //     .flag("-O2")
-    //     .define("ARM_MATH_CM4", None)
-    //     .define("__FPU_PRESENT", "1")
-    //     .define("__GNUC_PYTHON__", None)
-    //     .include("c_src/CMSIS-DSP/Include")
-    //     .include("c_src")
-    //     .file("c_src/ssb_filter.c")
-    //     .compile("ssb_filter");
-    //
-    // println!("cargo:rerun-if-changed=c_src/ssb_filter.c");
-    // println!("cargo:rerun-if-changed=c_src/ssb_filter.h");
+    cc::Build::new()
+        .flag("-mcpu=cortex-m4")
+        .flag("-mfpu=fpv4-sp-d16")
+        .flag("-mfloat-abi=hard")
+        .flag("-mthumb")
+        .flag("-O2")
+        .flag("-w")
+        .define("ARM_MATH_CM4", None)
+        .define("__FPU_PRESENT", "1")
+        .define("__GNUC_PYTHON__", None)
+        .include("c_src/CMSIS-DSP/Include")
+        .include("c_src/CMSIS-DSP/PrivateInclude")
+        .file("c_src/arm_fir_ssb_f32.c")
+        .compile("ssb_filter");
+
+    println!("cargo:rerun-if-changed=c_src/arm_fir_ssb_f32.c");
 
     // Re-run this script only when these files change.
     println!("cargo:rerun-if-changed=build.rs");

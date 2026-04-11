@@ -14,7 +14,7 @@
 //   arm_biquad HP         10 × f32  →   10 × f32 (Chebyshev I HP, 200 Hz) [CMSIS-DSP]
 //   compress()            10 × f32  →   10 × f32 (envelope follower, 4:1 ratio)
 //   arm_biquad LP         10 × f32  →   10 × f32 (Chebyshev I LP, 2800 Hz) [CMSIS-DSP]
-//   ssb_filter()          10 × f32  →  (10 × f32 I, 10 × f32 Q) analytic signal [TODO: C]
+//   arm_fir_ssb_f32()     10 × f32  →  (10 × f32 I, 10 × f32 Q) analytic signal [C]
 //   f32_to_q31()         (10 × I, 10 × Q) f32  →  (10 × I, 10 × Q) Q31
 //   arm_fir_interpolate  (10 × Q31 I, 10 × Q31 Q)  →  (100 × Q31 I, 100 × Q31 Q) [CMSIS-DSP]
 //   cordic + outphasing  (100 × I, 100 × Q) Q31  →  100 × PwmSample
@@ -24,11 +24,14 @@ use embassy_stm32::pac;
 
 use crate::config::{FRAME_SAMPLES, PWM_PERIOD, TIMERC_PERIOD};
 use crate::dsp_ffi::{
-    ArmBiquadCascadeDf2TInstanceF32, ArmFirDecimateInstanceQ31, ArmFirInterpolateInstanceQ31,
-    BIQUAD_HP_STATE_LEN, BIQUAD_LP_STATE_LEN, FIR_DEC_STATE_LEN, FIR_INTERP_STATE_LEN,
+    ArmBiquadCascadeDf2TInstanceF32, ArmFirDecimateInstanceQ31,
+    ArmFirInstanceF32, ArmFirInterpolateInstanceQ31,
+    BIQUAD_HP_STATE_LEN, BIQUAD_LP_STATE_LEN,
+    FIR_DEC_STATE_LEN, FIR_INTERP_STATE_LEN, SSB_STATE_LEN,
     arm_biquad_cascade_df2T_f32, arm_biquad_cascade_df2T_init_f32,
     arm_fir_decimate_init_q31, arm_fir_decimate_q31,
     arm_fir_interpolate_init_q31, arm_fir_interpolate_q31,
+    arm_fir_ssb_f32,
 };
 use crate::hrtim::{
     adc_buf_first_half, adc_buf_second_half,
@@ -38,7 +41,8 @@ use crate::hrtim::{
 use dsp_core::{
     DECIMATED_LEN, FIR_COEFFS_Q31, FIR_DECIMATE_FACTOR, FIR_NUM_TAPS,
     HIGHPASS_COEFFS, HIGHPASS_STAGES, LOWPASS_COEFFS, LOWPASS_STAGES,
-    Compressor, SsbFilter,
+    SSB_COEFFS_INTERLEAVED, SSB_FILTER_TAPS,
+    Compressor,
     adc_to_q31, q31_to_f32, f32_to_q31,
 };
 
@@ -81,14 +85,20 @@ static mut BIQUAD_LP_INST: ArmBiquadCascadeDf2TInstanceF32 = ArmBiquadCascadeDf2
 };
 
 // ---------------------------------------------------------------------------
-// Pure-Rust filter instances (compressor; SSB filter pending C replacement)
+// SSB FIR filter instance and state buffer
+// ---------------------------------------------------------------------------
+
+static mut SSB_STATE: [f32; SSB_STATE_LEN] = [0.0; SSB_STATE_LEN];
+
+static mut SSB_INST: ArmFirInstanceF32 = ArmFirInstanceF32 {
+    num_taps: 0, p_state: core::ptr::null_mut(), p_coeffs: core::ptr::null(),
+};
+
+// ---------------------------------------------------------------------------
+// Compressor (pure Rust)
 // ---------------------------------------------------------------------------
 
 static mut COMPRESSOR: Compressor = Compressor::new();
-
-// TODO: replace SsbFilter with the C implementation once c_src/ssb_filter.c
-//       is integrated and the API is known.
-static mut SSB_FILTER: SsbFilter = SsbFilter::new();
 
 // ---------------------------------------------------------------------------
 // CORDIC initialisation and per-sample calculation
@@ -159,6 +169,11 @@ pub fn init() {
             core::ptr::addr_of_mut!(FIR_INTERP_Q_STATE[0]),
             DECIMATED_LEN as u32,
         );
+
+        // SSB analytic FIR (arm_fir_ssb_f32): 257 taps, interleaved I/Q coefficients.
+        SSB_INST.num_taps = SSB_FILTER_TAPS as u16;
+        SSB_INST.p_coeffs = SSB_COEFFS_INTERLEAVED.as_ptr();
+        SSB_INST.p_state  = core::ptr::addr_of_mut!(SSB_STATE[0]);
     }
 }
 
@@ -250,10 +265,15 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) {
     );
 
     // --- Stage 4: SSB analytic FIR → I and Q paths ---
-    // TODO: replace with C implementation once c_src/ssb_filter.c is integrated.
     let mut ssb_i = [0.0f32; DECIMATED_LEN];
     let mut ssb_q = [0.0f32; DECIMATED_LEN];
-    SSB_FILTER.process(&lp_out, &mut ssb_i, &mut ssb_q);
+    arm_fir_ssb_f32(
+        &SSB_INST,
+        lp_out.as_ptr(),
+        ssb_i.as_mut_ptr(),
+        ssb_q.as_mut_ptr(),
+        DECIMATED_LEN as u32,
+    );
 
     // --- Stage 5a: f32 → Q31 ---
     let mut q31_i = [0i32; DECIMATED_LEN];
