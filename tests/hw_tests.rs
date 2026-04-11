@@ -15,6 +15,7 @@
 //   test_hrtim_timer_running — Timer C counter advances after init
 //   test_adc_dma_fires       — PROCESS_FIRST_HALF flag set within 2 ms
 //   test_adc_nonzero_samples — ADC buffer contains non-zero samples
+//   test_adc_mean_midscale   — ADC mean ≈ 2048 (voltage divider at VDDA/2)
 //   test_dma_rate            — ~10 full-transfer events in 10 ms
 
 #![no_std]
@@ -227,7 +228,31 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 5: DMA transfer rate ≈ 10 TC events per 10 ms
+    // Test 5: ADC mean value ≈ midscale (voltage divider at VDDA/2)
+    //
+    // The hardware splits 3.3 V in half, so the DC level fed into the ADC is
+    // ~1.65 V.  With a 12-bit ADC referenced to VDDA the expected count is
+    // ~2048.  Accept ±15 % (1740–2355) to cover resistor tolerances.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_adc_mean_midscale(_state: &mut State) {
+        info!("test: ADC mean value near midscale");
+
+        wait_ms(2); // let the buffer settle after previous test
+
+        let buf = unsafe { hrtim::adc_buf_first_half() };
+        let sum: u32 = buf.iter().map(|&s| s as u32).sum();
+        let mean = sum / buf.len() as u32;
+
+        info!("ADC mean = {} (expected ~2048)", mean);
+        defmt::assert!(mean >= 1740, "ADC mean too low: {} — check voltage divider", mean);
+        defmt::assert!(mean <= 2355, "ADC mean too high: {} — check voltage divider", mean);
+
+        info!("test_adc_mean_midscale: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6: DMA transfer rate ≈ 10 TC events per 10 ms
     //
     // ADC_DMA_LEN = 2 × FRAME_SAMPLES = 200 halfwords at 200 kHz → 1 ms per
     // full buffer cycle.  Each PROCESS_SECOND_HALF (TC) flag set equals one
