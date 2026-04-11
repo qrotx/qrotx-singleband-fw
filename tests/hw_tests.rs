@@ -16,6 +16,7 @@
 //   test_adc_dma_fires       — PROCESS_FIRST_HALF flag set within 2 ms
 //   test_adc_nonzero_samples — ADC buffer contains non-zero samples
 //   test_adc_mean_midscale   — ADC mean ≈ 2048 (voltage divider at VDDA/2)
+//   test_dsp_timing          — process_half() fits within 500 µs budget
 //   test_dma_rate            — ~10 full-transfer events in 10 ms
 
 #![no_std]
@@ -41,6 +42,7 @@ use panic_probe as _;
 #[path = "../src/hrtim.rs"]   mod hrtim;
 #[path = "../src/adc.rs"]     mod adc;
 #[path = "../src/dma.rs"]     mod dma;
+#[path = "../src/dsp.rs"]     mod dsp;
 #[path = "../src/si5351.rs"]  mod si5351;
 
 use hrtim::{PROCESS_FIRST_HALF, PROCESS_SECOND_HALF};
@@ -109,6 +111,7 @@ mod tests {
         adc::init();
         dma::init();
         adc::start();
+        dsp::init();
 
         // Build I2C for Si5351 tests.
         let mut i2c_cfg = I2cConfig::default();
@@ -252,7 +255,39 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 6: DMA transfer rate ≈ 10 TC events per 10 ms
+    // Test 6: DSP process_half() execution time
+    //
+    // One call to process_first_half() must complete within the 500 µs
+    // half-buffer period.  At 168 MHz that is 84 000 cycles.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_dsp_timing(_state: &mut State) {
+        info!("test: DSP process_half timing");
+
+        // Ensure DWT CYCCNT is running.
+        unsafe {
+            let demcr = 0xE000_EDFC as *mut u32;
+            demcr.write_volatile(demcr.read_volatile() | (1 << 24)); // TRCENA
+            let ctrl = 0xE000_1000 as *mut u32;
+            ctrl.write_volatile(ctrl.read_volatile() | 1);           // CYCCNTENA
+        }
+
+        let start = cortex_m::peripheral::DWT::cycle_count();
+        unsafe { dsp::process_first_half() };
+        let elapsed = cortex_m::peripheral::DWT::cycle_count().wrapping_sub(start);
+
+        info!("process_half: {} cycles ({} µs)", elapsed, elapsed / 168);
+        defmt::assert!(
+            elapsed < 84_000,
+            "process_half too slow: {} cycles (budget: 84 000 = 500 µs @ 168 MHz)",
+            elapsed
+        );
+
+        info!("test_dsp_timing: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 7: DMA transfer rate ≈ 10 TC events per 10 ms
     //
     // ADC_DMA_LEN = 2 × FRAME_SAMPLES = 200 halfwords at 200 kHz → 1 ms per
     // full buffer cycle.  Each PROCESS_SECOND_HALF (TC) flag set equals one
