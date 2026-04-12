@@ -587,18 +587,30 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineT
     cordic_modulus_vec(&interp_i, &interp_q, &mut cordic_mod, &mut cordic_phase);
     let t5c = cyccnt();
 
+    // All intermediate values stay within i32 (PWM_PERIOD=744, AMPLITUDE=425),
+    // so i64 is not needed.  Modulo by a non-power-of-2 constant is replaced
+    // with a single conditional subtract, which is cheaper than the compiler's
+    // reciprocal-multiply trick.
+    let half = PWM_PERIOD as i32 / 2; // 372
     for (i, slot) in hrtim_out.iter_mut().enumerate() {
         let modulus = cordic_mod[i];
         let phase   = cordic_phase[i];
 
-        let mag = (((modulus as i64) >> 15) * AMPLITUDE as i64) >> 16;
+        // CORDIC MODULUS output is non-negative Q1.31; scale to amplitude ticks.
+        let mag = ((modulus >> 15) * AMPLITUDE as i32) >> 16;
         let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
 
-        let phase_ticks =
-            (((-(phase as i64)) >> 15) * (PWM_PERIOD as i64 / 2) >> 16)
-            + PWM_PERIOD as i64 / 2;
-        let ta_cmp1 = (phase_ticks as u32) % PWM_PERIOD;
-        let ta_cmp2 = (ta_cmp1 + PWM_PERIOD / 2) % PWM_PERIOD;
+        // Shift before negating to avoid i32::MIN overflow on negation.
+        // phase_ticks ∈ [0, PWM_PERIOD]; conditional subtract instead of %.
+        let phase_ticks = (-(phase >> 15) * half >> 16) + half;
+        let ta_cmp1 = if phase_ticks >= PWM_PERIOD as i32 {
+            (phase_ticks - PWM_PERIOD as i32) as u32
+        } else {
+            phase_ticks as u32
+        };
+        // ta_cmp1 + half ∈ [372, 1115], so one conditional subtract suffices.
+        let t = ta_cmp1 + PWM_PERIOD / 2;
+        let ta_cmp2 = if t >= PWM_PERIOD { t - PWM_PERIOD } else { t };
 
         *slot = PwmSample {
             tim_a_cmp1: ta_cmp1,
