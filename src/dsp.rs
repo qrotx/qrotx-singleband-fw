@@ -371,15 +371,58 @@ pub fn init() {
     }
 }
 
-/// Blocking CORDIC MODULUS calculation: (I, Q) → (modulus, phase), all Q1.31.
-#[inline]
-fn cordic_modulus(i: i32, q: i32) -> (i32, i32) {
-    pac::CORDIC.wdata().write_value(i as u32);
-    pac::CORDIC.wdata().write_value(q as u32);
-    while !pac::CORDIC.csr().read().rrdy() {}
-    let modulus = pac::CORDIC.rdata().read() as i32;
-    let phase   = pac::CORDIC.rdata().read() as i32;
-    (modulus, phase)
+/// Zero-overhead pipelined CORDIC MODULUS for a vector of (I, Q) pairs.
+///
+/// Implements the RM0440 §17.3.6 zero-overhead pipeline:
+///   • Write I[0],Q[0]           → launches calc[0]
+///   • Write I[1],Q[1]           → queues  calc[1]
+///   • Loop: read mod[i]+phase[i] → triggers calc[i+1]; write I[i+2],Q[i+2]
+///   • Drain last two results
+///
+/// Reading CORDIC_RDATA inserts bus wait-states until the result is ready, so
+/// there is no polling loop and no idle cycles between successive calculations.
+///
+/// CORDIC_CSR must already be configured for MODULUS, NARGS=1, NRES=1 (Q1.31).
+unsafe fn cordic_modulus_vec(
+    i_vals:    &[i32],
+    q_vals:    &[i32],
+    mod_out:   &mut [i32],
+    phase_out: &mut [i32],
+) {
+    let n = i_vals.len();
+    debug_assert!(n >= 1);
+
+    let c = pac::CORDIC;
+
+    if n == 1 {
+        c.wdata().write_value(i_vals[0] as u32);
+        c.wdata().write_value(q_vals[0] as u32);
+        mod_out[0]   = c.rdata().read() as i32;
+        phase_out[0] = c.rdata().read() as i32;
+        return;
+    }
+
+    // Prime: launch calc[0], queue calc[1].
+    c.wdata().write_value(i_vals[0] as u32);
+    c.wdata().write_value(q_vals[0] as u32); // launches calc[0]
+    c.wdata().write_value(i_vals[1] as u32);
+    c.wdata().write_value(q_vals[1] as u32); // queues  calc[1]
+
+    // Pipelined drain: read calc[i], queue calc[i+2].
+    for i in 0..n - 2 {
+        mod_out[i]   = c.rdata().read() as i32; // stalls until calc[i] done
+        phase_out[i] = c.rdata().read() as i32; // triggers calc[i+1]
+        c.wdata().write_value(i_vals[i + 2] as u32);
+        c.wdata().write_value(q_vals[i + 2] as u32); // queues calc[i+2]
+    }
+
+    // Drain calc[n-2] (running; calc[n-1] already queued by last loop iteration).
+    mod_out[n - 2]   = c.rdata().read() as i32;
+    phase_out[n - 2] = c.rdata().read() as i32; // triggers calc[n-1]
+
+    // Drain calc[n-1].
+    mod_out[n - 1]   = c.rdata().read() as i32;
+    phase_out[n - 1] = c.rdata().read() as i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -535,8 +578,13 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
     let t5b = cyccnt();
 
     // Stage 5c: CORDIC polar conversion + outphasing
+    let mut cordic_mod   = [0i32; FRAME_SAMPLES];
+    let mut cordic_phase = [0i32; FRAME_SAMPLES];
+    cordic_modulus_vec(&interp_i, &interp_q, &mut cordic_mod, &mut cordic_phase);
+
     for (i, slot) in hrtim_out.iter_mut().enumerate() {
-        let (modulus, phase) = cordic_modulus(interp_i[i], interp_q[i]);
+        let modulus = cordic_mod[i];
+        let phase   = cordic_phase[i];
 
         let mag = (((modulus as i64) >> 15) * AMPLITUDE as i64) >> 16;
         let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
@@ -662,8 +710,13 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) {
     );
 
     // --- Stage 5c: CORDIC polar conversion + outphasing → HRTIM compare values ---
+    let mut cordic_mod   = [0i32; FRAME_SAMPLES];
+    let mut cordic_phase = [0i32; FRAME_SAMPLES];
+    cordic_modulus_vec(&interp_i, &interp_q, &mut cordic_mod, &mut cordic_phase);
+
     for (i, slot) in hrtim_out.iter_mut().enumerate() {
-        let (modulus, phase) = cordic_modulus(interp_i[i], interp_q[i]);
+        let modulus = cordic_mod[i];
+        let phase   = cordic_phase[i];
 
         let mag = (((modulus as i64) >> 15) * AMPLITUDE as i64) >> 16;
         let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
