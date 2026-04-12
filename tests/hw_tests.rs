@@ -21,6 +21,8 @@
 //   test_fir_interpolate_passband — 1 kHz passes through 10:1 interpolator
 //   test_ssb_analytic_signal — SSB filter suppresses negative frequency ≥ 40 dB
 //   test_cordic_modulus      — spot-checks CORDIC modulus and output ordering
+//   test_outphasing_boundary — zero/full amplitude, ta_cmp2 invariant
+//   test_compressor_passes_quiet — quiet signal gets makeup gain of 1.5×
 
 #![no_std]
 #![no_main]
@@ -874,7 +876,90 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 18: Sample format conversion helpers
+    // Test 18: Outphasing boundary conditions
+    //
+    // Verifies outphasing_sample() at the edges of its input range:
+    //
+    //   modulus = 0         → tc_cmp1 clamped to minimum (3)
+    //   modulus = i32::MAX  → tc_cmp1 clamped to AMPLITUDE
+    //   phase   = 0         → ta_cmp1 = PWM_PERIOD/2, ta_cmp2 = 0  (±90°)
+    //   phase   = i32::MAX  → ta_cmp1 wraps correctly via conditional subtract
+    //   ta_cmp2 invariant   → always equals (ta_cmp1 + PWM_PERIOD/2) % PWM_PERIOD
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_outphasing_boundary(_state: &mut State) {
+        use config::{PWM_PERIOD, TIMERC_PERIOD};
+        const AMPLITUDE: u32 = TIMERC_PERIOD / 2;
+
+        // Zero modulus → minimum envelope (clamp floor = 3).
+        let s = dsp::outphasing_sample(0, 0);
+        info!("zero mod: tc_cmp1={} ta_cmp1={} ta_cmp2={}", s.tim_c_cmp1, s.tim_a_cmp1, s.tim_a_cmp2);
+        defmt::assert!(s.tim_c_cmp1 == 3, "zero mod: tc_cmp1 should be 3, got {}", s.tim_c_cmp1);
+
+        // Full modulus → amplitude ceiling.
+        let s = dsp::outphasing_sample(i32::MAX, 0);
+        info!("full mod: tc_cmp1={} (expected {})", s.tim_c_cmp1, AMPLITUDE);
+        defmt::assert!(s.tim_c_cmp1 == AMPLITUDE, "full mod: tc_cmp1={} expected {}", s.tim_c_cmp1, AMPLITUDE);
+
+        // phase = 0  (CORDIC: atan2(0, MAX) = 0 in Q1.31).
+        // phase_ticks = (-0 * half >> 16) + half = half = PWM_PERIOD/2.
+        let s = dsp::outphasing_sample(i32::MAX, 0);
+        let expected_cmp1 = PWM_PERIOD / 2;
+        let expected_cmp2 = 0u32; // (PWM_PERIOD/2 + PWM_PERIOD/2) % PWM_PERIOD = 0
+        info!("phase=0: ta_cmp1={} (exp {}) ta_cmp2={} (exp {})",
+              s.tim_a_cmp1, expected_cmp1, s.tim_a_cmp2, expected_cmp2);
+        defmt::assert!(s.tim_a_cmp1 == expected_cmp1,
+            "phase=0: ta_cmp1={} expected {}", s.tim_a_cmp1, expected_cmp1);
+        defmt::assert!(s.tim_a_cmp2 == expected_cmp2,
+            "phase=0: ta_cmp2={} expected {}", s.tim_a_cmp2, expected_cmp2);
+
+        // ta_cmp2 invariant: must equal (ta_cmp1 + PWM_PERIOD/2) % PWM_PERIOD
+        // for all inputs. Check several phase values spanning the full range.
+        for &phase in &[0i32, i32::MAX / 4, i32::MAX / 2, i32::MAX / 4 * 3, i32::MAX] {
+            let s = dsp::outphasing_sample(i32::MAX / 2, phase);
+            let expected = (s.tim_a_cmp1 + PWM_PERIOD / 2) % PWM_PERIOD;
+            defmt::assert!(s.tim_a_cmp2 == expected,
+                "ta_cmp2 invariant failed at phase={}: cmp1={} cmp2={} expected {}",
+                phase, s.tim_a_cmp1, s.tim_a_cmp2, expected);
+        }
+
+        // tim_b mirrors tim_a.
+        let s = dsp::outphasing_sample(i32::MAX / 2, i32::MAX / 4);
+        defmt::assert!(s.tim_b_cmp1 == s.tim_a_cmp1, "tim_b_cmp1 != tim_a_cmp1");
+        defmt::assert!(s.tim_b_cmp2 == s.tim_a_cmp2, "tim_b_cmp2 != tim_a_cmp2");
+
+        info!("test_outphasing_boundary: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 19: Compressor passes quiet signal with makeup gain
+    //
+    // A signal well below threshold (0.05 < 0.3) must not be compressed.
+    // The compressor applies makeup gain of 1.5×, so output RMS ≈ input × 1.5.
+    // Accept ±10 % tolerance around the expected gain.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compressor_passes_quiet(_state: &mut State) {
+        const AMP: f32 = 0.05;   // well below COMP_THRESHOLD = 0.3
+        const MAKEUP: f32 = 1.5; // COMP_MAKEUP_GAIN
+        const N: usize = 2000;
+        let input = sine_f32_arr::<N>(1_000.0, 20_000.0, AMP);
+        let mut comp = dsp::Compressor::new();
+        let mut output = [0.0f32; N];
+        comp.process(&input, &mut output);
+        // Skip first 500 samples to let the envelope follower settle.
+        let in_rms  = rms_f32_buf::<1500>(&input [500..].try_into().unwrap());
+        let out_rms = rms_f32_buf::<1500>(&output[500..].try_into().unwrap());
+        let actual_gain = out_rms / in_rms;
+        info!("Compressor quiet: in_rms={} out_rms={} gain={} (expected {})",
+              in_rms, out_rms, actual_gain, MAKEUP);
+        defmt::assert!(actual_gain > MAKEUP * 0.9, "gain too low: {}", actual_gain);
+        defmt::assert!(actual_gain < MAKEUP * 1.1, "gain too high: {}", actual_gain);
+        info!("test_compressor_passes_quiet: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 20: Sample format conversion helpers
     // -----------------------------------------------------------------------
     #[test]
     fn test_conversion_helpers(_state: &mut State) {

@@ -483,6 +483,46 @@ pub unsafe fn process_second_half() -> PipelineTimings {
 }
 
 // ---------------------------------------------------------------------------
+// Outphasing arithmetic
+// ---------------------------------------------------------------------------
+
+/// Convert a CORDIC MODULUS result to a `PwmSample`.
+///
+/// `modulus` and `phase` are Q1.31 outputs from `cordic_modulus_vec`.
+/// Compensates for the 1/L gain of the CMSIS polyphase interpolator.
+///
+/// All intermediate values fit in i32 given the configured PWM_PERIOD
+/// and AMPLITUDE; i64 is not needed.  Non-power-of-2 modulo is avoided
+/// with a single conditional subtract.
+pub fn outphasing_sample(modulus: i32, phase: i32) -> PwmSample {
+    let half = PWM_PERIOD as i32 / 2;
+
+    // Scale CORDIC modulus to amplitude ticks; compensate for 1/L interpolator gain.
+    let mag = ((modulus >> 15) * (AMPLITUDE as i32 * FIR_DECIMATE_FACTOR as i32)) >> 16;
+    let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
+
+    // Shift before negating to avoid i32::MIN overflow.
+    // phase_ticks ∈ [0, PWM_PERIOD]; one conditional subtract replaces %.
+    let phase_ticks = (-(phase >> 15) * half >> 16) + half;
+    let ta_cmp1 = if phase_ticks >= PWM_PERIOD as i32 {
+        (phase_ticks - PWM_PERIOD as i32) as u32
+    } else {
+        phase_ticks as u32
+    };
+    // ta_cmp1 + half ∈ [half, half + PWM_PERIOD]; one subtract suffices.
+    let t = ta_cmp1 + PWM_PERIOD / 2;
+    let ta_cmp2 = if t >= PWM_PERIOD { t - PWM_PERIOD } else { t };
+
+    PwmSample {
+        tim_a_cmp1: ta_cmp1,
+        tim_a_cmp2: ta_cmp2,
+        tim_b_cmp1: ta_cmp1,
+        tim_b_cmp2: ta_cmp2,
+        tim_c_cmp1: tc_cmp1,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Internal pipeline implementation
 // ---------------------------------------------------------------------------
 
@@ -587,39 +627,8 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineT
     cordic_modulus_vec(&interp_i, &interp_q, &mut cordic_mod, &mut cordic_phase);
     let t5c = cyccnt();
 
-    // All intermediate values stay within i32 (PWM_PERIOD=744, AMPLITUDE=425),
-    // so i64 is not needed.  Modulo by a non-power-of-2 constant is replaced
-    // with a single conditional subtract, which is cheaper than the compiler's
-    // reciprocal-multiply trick.
-    let half = PWM_PERIOD as i32 / 2; // 372
     for (i, slot) in hrtim_out.iter_mut().enumerate() {
-        let modulus = cordic_mod[i];
-        let phase   = cordic_phase[i];
-
-        // CORDIC MODULUS output is non-negative Q1.31; scale to amplitude ticks.
-        // Compensate for the 1/L gain of the CMSIS polyphase interpolator.
-        let mag = ((modulus >> 15) * (AMPLITUDE as i32 * FIR_DECIMATE_FACTOR as i32)) >> 16;
-        let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
-
-        // Shift before negating to avoid i32::MIN overflow on negation.
-        // phase_ticks ∈ [0, PWM_PERIOD]; conditional subtract instead of %.
-        let phase_ticks = (-(phase >> 15) * half >> 16) + half;
-        let ta_cmp1 = if phase_ticks >= PWM_PERIOD as i32 {
-            (phase_ticks - PWM_PERIOD as i32) as u32
-        } else {
-            phase_ticks as u32
-        };
-        // ta_cmp1 + half ∈ [372, 1115], so one conditional subtract suffices.
-        let t = ta_cmp1 + PWM_PERIOD / 2;
-        let ta_cmp2 = if t >= PWM_PERIOD { t - PWM_PERIOD } else { t };
-
-        *slot = PwmSample {
-            tim_a_cmp1: ta_cmp1,
-            tim_a_cmp2: ta_cmp2,
-            tim_b_cmp1: ta_cmp1,
-            tim_b_cmp2: ta_cmp2,
-            tim_c_cmp1: tc_cmp1,
-        };
+        *slot = outphasing_sample(cordic_mod[i], cordic_phase[i]);
     }
     let t_end = cyccnt();
 
