@@ -597,7 +597,8 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineT
         let phase   = cordic_phase[i];
 
         // CORDIC MODULUS output is non-negative Q1.31; scale to amplitude ticks.
-        let mag = ((modulus >> 15) * AMPLITUDE as i32) >> 16;
+        // Compensate for the 1/L gain of the CMSIS polyphase interpolator.
+        let mag = ((modulus >> 15) * (AMPLITUDE as i32 * FIR_DECIMATE_FACTOR as i32)) >> 16;
         let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
 
         // Shift before negating to avoid i32::MIN overflow on negation.
