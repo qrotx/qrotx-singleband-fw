@@ -95,9 +95,10 @@ extern "C" {
         block_size: u32,
     ) -> i32; // arm_status: 0 = ARM_MATH_SUCCESS
 
-    /// Run the FIR decimation filter on one block of input samples.
+    /// Run the FIR decimation filter on one block of input samples (fast variant:
+    /// 32-bit accumulator, no 64-bit saturation — sufficient for audio).
     /// blockSize: number of INPUT samples; output length = blockSize / M.
-    pub fn arm_fir_decimate_q31(
+    pub fn arm_fir_decimate_fast_q31(
         s:          *const ArmFirDecimateInstanceQ31,
         p_src:      *const i32,
         p_dst:      *mut i32,

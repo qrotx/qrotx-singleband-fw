@@ -45,7 +45,7 @@ fn main() {
         .define("__GNUC_PYTHON__",   None)      // skip cmsis_compiler.h (CMSIS-Core not submodule'd)
         .include("c_src/CMSIS-DSP/Include")
         .include("c_src/CMSIS-DSP/PrivateInclude")
-        .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_decimate_q31.c")
+        .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_decimate_fast_q31.c")
         .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_decimate_init_q31.c")
         .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_interpolate_q31.c")
         .file("c_src/CMSIS-DSP/Source/FilteringFunctions/arm_fir_interpolate_init_q31.c")

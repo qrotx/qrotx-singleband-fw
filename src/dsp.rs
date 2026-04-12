@@ -9,7 +9,7 @@
 // Pipeline per half-buffer (FRAME_SAMPLES = 100 ADC samples at 200 kHz):
 //
 //   adc_to_q31()         100 × u16  →  100 × i32 (Q31, DC-centred)
-//   arm_fir_decimate     100 × i32  →   10 × i32 (Q31, 20 kHz) [CMSIS-DSP]
+//   arm_fir_decimate_fast 100 × i32  →   10 × i32 (Q31, 20 kHz) [CMSIS-DSP]
 //   q31_to_f32()          10 × i32  →   10 × f32
 //   arm_biquad HP         10 × f32  →   10 × f32 (Chebyshev I HP, 200 Hz) [CMSIS-DSP]
 //   compress()            10 × f32  →   10 × f32 (envelope follower, 4:1 ratio)
@@ -29,7 +29,7 @@ use crate::dsp_ffi::{
     BIQUAD_HP_STATE_LEN, BIQUAD_LP_STATE_LEN,
     FIR_DEC_STATE_LEN, FIR_INTERP_STATE_LEN, SSB_STATE_LEN,
     arm_biquad_cascade_df2T_f32, arm_biquad_cascade_df2T_init_f32,
-    arm_fir_decimate_init_q31, arm_fir_decimate_q31,
+    arm_fir_decimate_init_q31, arm_fir_decimate_fast_q31,
     arm_fir_interpolate_init_q31, arm_fir_interpolate_q31,
     arm_fir_ssb_f32,
 };
@@ -501,7 +501,7 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineT
 
     // --- Stage 2: 10:1 FIR decimation → 10 Q31 samples at 20 kHz ---
     let mut decimated = [0i32; DECIMATED_LEN];
-    arm_fir_decimate_q31(
+    arm_fir_decimate_fast_q31(
         &FIR_DEC_INST,
         q31_in.as_ptr(),
         decimated.as_mut_ptr(),

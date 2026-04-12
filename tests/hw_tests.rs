@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn test_fir_decimate_passband(_state: &mut State) {
         use dsp_ffi::{ArmFirDecimateInstanceQ31, FIR_DEC_STATE_LEN,
-                      arm_fir_decimate_init_q31, arm_fir_decimate_q31};
+                      arm_fir_decimate_init_q31, arm_fir_decimate_fast_q31};
         use dsp::{FIR_COEFFS_Q31, FIR_NUM_TAPS, FIR_DECIMATE_FACTOR, DECIMATED_LEN};
         const FRAMES: usize = 10;
         const N_IN:  usize = config::FRAME_SAMPLES * FRAMES;
@@ -418,7 +418,7 @@ mod tests {
         let mut output = [0i32; N_OUT];
         for frame in 0..FRAMES {
             unsafe {
-                arm_fir_decimate_q31(
+                arm_fir_decimate_fast_q31(
                     &inst,
                     input[frame * config::FRAME_SAMPLES..].as_ptr(),
                     output[frame * DECIMATED_LEN..].as_mut_ptr(),
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn test_fir_decimate_stopband(_state: &mut State) {
         use dsp_ffi::{ArmFirDecimateInstanceQ31, FIR_DEC_STATE_LEN,
-                      arm_fir_decimate_init_q31, arm_fir_decimate_q31};
+                      arm_fir_decimate_init_q31, arm_fir_decimate_fast_q31};
         use dsp::{FIR_COEFFS_Q31, FIR_NUM_TAPS, FIR_DECIMATE_FACTOR, DECIMATED_LEN};
         const FRAMES: usize = 20;
         const N_IN:  usize = config::FRAME_SAMPLES * FRAMES;
@@ -462,7 +462,7 @@ mod tests {
         let mut output = [0i32; N_OUT];
         for frame in 0..FRAMES {
             unsafe {
-                arm_fir_decimate_q31(
+                arm_fir_decimate_fast_q31(
                     &inst,
                     input[frame * config::FRAME_SAMPLES..].as_ptr(),
                     output[frame * DECIMATED_LEN..].as_mut_ptr(),
