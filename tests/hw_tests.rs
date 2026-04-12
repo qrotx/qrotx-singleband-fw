@@ -18,6 +18,7 @@
 //   test_adc_mean_midscale   — ADC mean ≈ 2048 (voltage divider at VDDA/2)
 //   test_dsp_timing          — process_half() fits within 500 µs budget
 //   test_dma_rate            — ~10 full-transfer events in 10 ms
+//   test_fir_interpolate_passband — 1 kHz passes through 10:1 interpolator
 //   test_ssb_analytic_signal — SSB filter suppresses negative frequency ≥ 40 dB
 
 #![no_std]
@@ -481,7 +482,61 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 10: Highpass biquad rejects DC
+    // Test 10: FIR interpolator passband — 1 kHz passes through
+    //
+    // Symmetric counterpart to tests 8/9.  The interpolator takes
+    // DECIMATED_LEN samples at 20 kHz and produces FRAME_SAMPLES at 200 kHz.
+    // A 1 kHz tone is well within the prototype passband (cutoff 5 kHz) and
+    // must survive with RMS within ±30 % of the input.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_fir_interpolate_passband(_state: &mut State) {
+        use dsp_ffi::{ArmFirInterpolateInstanceQ31, FIR_INTERP_STATE_LEN,
+                      arm_fir_interpolate_init_q31, arm_fir_interpolate_q31};
+        use dsp::{FIR_COEFFS_Q31, FIR_NUM_TAPS, FIR_DECIMATE_FACTOR, DECIMATED_LEN};
+        const FRAMES: usize = 10;
+        const N_IN:  usize = DECIMATED_LEN       * FRAMES; //  100 samples @ 20 kHz
+        const N_OUT: usize = config::FRAME_SAMPLES * FRAMES; // 1000 samples @ 200 kHz
+
+        let input = sine_q31::<N_IN>(1_000.0, 20_000.0, 0.5);
+        let mut state = [0i32; FIR_INTERP_STATE_LEN];
+        let mut inst = ArmFirInterpolateInstanceQ31 {
+            l: 0, phase_length: 0, p_coeffs: core::ptr::null(), p_state: core::ptr::null_mut(),
+        };
+        unsafe {
+            arm_fir_interpolate_init_q31(
+                &raw mut inst, FIR_DECIMATE_FACTOR as u8, FIR_NUM_TAPS as u16,
+                FIR_COEFFS_Q31.as_ptr(), state.as_mut_ptr(), DECIMATED_LEN as u32,
+            );
+        }
+        let mut output = [0i32; N_OUT];
+        for frame in 0..FRAMES {
+            unsafe {
+                arm_fir_interpolate_q31(
+                    &inst,
+                    input[frame * DECIMATED_LEN..].as_ptr(),
+                    output[frame * config::FRAME_SAMPLES..].as_mut_ptr(),
+                    DECIMATED_LEN as u32,
+                );
+            }
+        }
+        // Skip the first output frame to let the delay line settle.
+        let in_rms  = rms_q31_buf::<{N_IN  - DECIMATED_LEN}>(
+            input [DECIMATED_LEN..].try_into().unwrap());
+        let out_rms = rms_q31_buf::<{N_OUT - config::FRAME_SAMPLES}>(
+            output[config::FRAME_SAMPLES..].try_into().unwrap());
+        // The CMSIS polyphase interpolator has passband gain 1/L by design:
+        // each of L sub-filters holds numTaps/L taps, so it sums to 1/L of
+        // the prototype.  Compare against expected = in_rms / L.
+        let expected = in_rms / FIR_DECIMATE_FACTOR as f32;
+        info!("FIR interp 1 kHz passband: in_rms={} out_rms={} expected≈{}", in_rms, out_rms, expected);
+        defmt::assert!(out_rms > expected * 0.7, "passband too attenuated");
+        defmt::assert!(out_rms < expected * 1.4, "passband amplified");
+        info!("test_fir_interpolate_passband: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11: Highpass biquad rejects DC
     // -----------------------------------------------------------------------
     #[test]
     fn test_highpass_rejects_dc(_state: &mut State) {
@@ -509,7 +564,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 11: Highpass biquad passes 1 kHz
+    // Test 12: Highpass biquad passes 1 kHz
     // -----------------------------------------------------------------------
     #[test]
     fn test_highpass_passes_1khz(_state: &mut State) {
@@ -538,7 +593,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 12: Lowpass biquad passes 500 Hz
+    // Test 13: Lowpass biquad passes 500 Hz
     // -----------------------------------------------------------------------
     #[test]
     fn test_lowpass_passes_500hz(_state: &mut State) {
@@ -567,7 +622,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 13: Lowpass biquad rejects 4 kHz
+    // Test 14: Lowpass biquad rejects 4 kHz
     // -----------------------------------------------------------------------
     #[test]
     fn test_lowpass_rejects_4khz(_state: &mut State) {
@@ -596,7 +651,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 14: Compressor reduces a loud signal
+    // Test 15: Compressor reduces a loud signal
     // -----------------------------------------------------------------------
     #[test]
     fn test_compressor_reduces_loud(_state: &mut State) {
@@ -612,7 +667,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 15: SSB filter produces a true analytic signal
+    // Test 16: SSB filter produces a true analytic signal
     //
     // Feed a 1 kHz sine into arm_fir_ssb_f32.  The complex output
     // z[n] = I[n] + j·Q[n] must be one-sided in frequency: all energy at
@@ -757,7 +812,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 16: Sample format conversion helpers
+    // Test 17: Sample format conversion helpers
     // -----------------------------------------------------------------------
     #[test]
     fn test_conversion_helpers(_state: &mut State) {
