@@ -276,10 +276,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-core"
-version = "0.1.0"
-
-[[package]]
 name = "dsp-fixedpoint"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -814,13 +810,13 @@ dependencies = [
  "defmt 0.3.100",
  "defmt-rtt",
  "defmt-test",
- "dsp-core",
  "embassy-executor",
  "embassy-futures",
  "embassy-stm32",
  "embassy-sync",
  "embassy-time",
  "heapless 0.8.0",
+ "libm",
  "panic-probe",
  "static_cell",
 ]

@@ -1,6 +1,0 @@
-[package]
-name = "dsp-core"
-version = "0.1.0"
-edition = "2021"
-license = "GPL-3.0-or-later"
-description = "Pure-math DSP primitives for the qrotx firmware — no_std, no HAL"

@@ -10,9 +10,10 @@
 // All structs are repr(C) and contain raw pointers; they live in static mut
 // statics in dsp.rs and are accessed exclusively from the single DSP task.
 
-use dsp_core::{
+use crate::config::FRAME_SAMPLES;
+use crate::dsp::{
     DECIMATED_LEN, FIR_DECIMATE_FACTOR, FIR_NUM_TAPS,
-    FRAME_SAMPLES, HIGHPASS_STAGES, LOWPASS_STAGES, SSB_FILTER_TAPS,
+    HIGHPASS_STAGES, LOWPASS_STAGES, SSB_FILTER_TAPS,
 };
 
 // ---------------------------------------------------------------------------

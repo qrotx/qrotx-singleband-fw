@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "dsp-core"]
+members = ["."]
 resolver = "2"
 
 [package]
@@ -56,7 +56,7 @@ panic-probe  = { version = "0.3", features = ["print-defmt"] }
 # ---------------------------------------------------------------------------
 static_cell  = "2"      # safe static allocation for async tasks
 heapless     = "0.8"    # fixed-capacity collections (no heap needed)
-dsp-core     = { path = "dsp-core" }
+libm         = "0.2"    # sin/cos for hw-test sine generators
 defmt-test   = "0.3"    # hardware-in-the-loop test framework
 
 # ---------------------------------------------------------------------------

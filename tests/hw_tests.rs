@@ -27,6 +27,7 @@ use core::sync::atomic::Ordering;
 use defmt::info;
 use defmt_rtt as _;
 use embassy_stm32::dma as embassy_dma;
+extern crate libm;
 use embassy_stm32::i2c::{Config as I2cConfig, I2c};
 use embassy_stm32::mode::Async;
 use embassy_stm32::pac;
@@ -71,6 +72,38 @@ fn spin(cycles: u32) {
 /// Spin-wait for approximately `ms` milliseconds at 168 MHz SYSCLK.
 fn wait_ms(ms: u32) {
     spin(ms * 168_000);
+}
+
+// ---------------------------------------------------------------------------
+// DSP filter test helpers (used by tests 8–15)
+// ---------------------------------------------------------------------------
+
+fn sine_q31<const N: usize>(freq_hz: f32, fs_hz: f32, amp: f32) -> [i32; N] {
+    let mut out = [0i32; N];
+    for (i, s) in out.iter_mut().enumerate() {
+        let phase = 2.0 * core::f32::consts::PI * freq_hz * i as f32 / fs_hz;
+        *s = (amp * libm::sinf(phase) * i32::MAX as f32) as i32;
+    }
+    out
+}
+
+fn sine_f32_arr<const N: usize>(freq_hz: f32, fs_hz: f32, amp: f32) -> [f32; N] {
+    let mut out = [0.0f32; N];
+    for (i, s) in out.iter_mut().enumerate() {
+        let phase = 2.0 * core::f32::consts::PI * freq_hz * i as f32 / fs_hz;
+        *s = amp * libm::sinf(phase);
+    }
+    out
+}
+
+fn rms_q31_buf<const N: usize>(buf: &[i32; N]) -> f32 {
+    let sum: f32 = buf.iter().map(|&x| { let f = x as f32 / i32::MAX as f32; f * f }).sum();
+    libm::sqrtf(sum / N as f32)
+}
+
+fn rms_f32_buf<const N: usize>(buf: &[f32; N]) -> f32 {
+    let sum: f32 = buf.iter().map(|&x| x * x).sum();
+    libm::sqrtf(sum / N as f32)
 }
 
 // ---------------------------------------------------------------------------
@@ -332,5 +365,238 @@ mod tests {
         defmt::assert!(count <= 12, "Too many DMA events: {} (expected ~10)", count);
 
         info!("test_dma_rate: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 8: FIR decimator passband — 1 kHz passes through
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_fir_decimate_passband(_state: &mut State) {
+        use dsp_ffi::{ArmFirDecimateInstanceQ31, FIR_DEC_STATE_LEN,
+                      arm_fir_decimate_init_q31, arm_fir_decimate_q31};
+        use dsp::{FIR_COEFFS_Q31, FIR_NUM_TAPS, FIR_DECIMATE_FACTOR, DECIMATED_LEN};
+        const FRAMES: usize = 10;
+        const N_IN:  usize = config::FRAME_SAMPLES * FRAMES;
+        const N_OUT: usize = DECIMATED_LEN * FRAMES;
+
+        let input  = sine_q31::<N_IN>(1_000.0, 200_000.0, 0.5);
+        let mut state = [0i32; FIR_DEC_STATE_LEN];
+        let mut inst = ArmFirDecimateInstanceQ31 {
+            m: 0, num_taps: 0, p_coeffs: core::ptr::null(), p_state: core::ptr::null_mut(),
+        };
+        unsafe {
+            arm_fir_decimate_init_q31(
+                &raw mut inst, FIR_NUM_TAPS as u16, FIR_DECIMATE_FACTOR as u8,
+                FIR_COEFFS_Q31.as_ptr(), state.as_mut_ptr(), config::FRAME_SAMPLES as u32,
+            );
+        }
+        let mut output = [0i32; N_OUT];
+        for frame in 0..FRAMES {
+            unsafe {
+                arm_fir_decimate_q31(
+                    &inst,
+                    input[frame * config::FRAME_SAMPLES..].as_ptr(),
+                    output[frame * DECIMATED_LEN..].as_mut_ptr(),
+                    config::FRAME_SAMPLES as u32,
+                );
+            }
+        }
+        let in_rms  = rms_q31_buf::<{N_IN  - config::FRAME_SAMPLES}>(
+            input [config::FRAME_SAMPLES..].try_into().unwrap());
+        let out_rms = rms_q31_buf::<{N_OUT - DECIMATED_LEN}>(
+            output[DECIMATED_LEN..].try_into().unwrap());
+        info!("FIR dec 1 kHz passband: in_rms={} out_rms={}", in_rms, out_rms);
+        defmt::assert!(out_rms > in_rms * 0.7, "passband too attenuated");
+        defmt::assert!(out_rms < in_rms * 1.4, "passband amplified");
+        info!("test_fir_decimate_passband: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 9: FIR decimator stopband — 12 kHz rejected (> −40 dB)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_fir_decimate_stopband(_state: &mut State) {
+        use dsp_ffi::{ArmFirDecimateInstanceQ31, FIR_DEC_STATE_LEN,
+                      arm_fir_decimate_init_q31, arm_fir_decimate_q31};
+        use dsp::{FIR_COEFFS_Q31, FIR_NUM_TAPS, FIR_DECIMATE_FACTOR, DECIMATED_LEN};
+        const FRAMES: usize = 20;
+        const N_IN:  usize = config::FRAME_SAMPLES * FRAMES;
+        const N_OUT: usize = DECIMATED_LEN * FRAMES;
+
+        let input  = sine_q31::<N_IN>(12_000.0, 200_000.0, 0.5);
+        let mut state = [0i32; FIR_DEC_STATE_LEN];
+        let mut inst = ArmFirDecimateInstanceQ31 {
+            m: 0, num_taps: 0, p_coeffs: core::ptr::null(), p_state: core::ptr::null_mut(),
+        };
+        unsafe {
+            arm_fir_decimate_init_q31(
+                &raw mut inst, FIR_NUM_TAPS as u16, FIR_DECIMATE_FACTOR as u8,
+                FIR_COEFFS_Q31.as_ptr(), state.as_mut_ptr(), config::FRAME_SAMPLES as u32,
+            );
+        }
+        let mut output = [0i32; N_OUT];
+        for frame in 0..FRAMES {
+            unsafe {
+                arm_fir_decimate_q31(
+                    &inst,
+                    input[frame * config::FRAME_SAMPLES..].as_ptr(),
+                    output[frame * DECIMATED_LEN..].as_mut_ptr(),
+                    config::FRAME_SAMPLES as u32,
+                );
+            }
+        }
+        let in_rms  = rms_q31_buf::<{N_IN  - config::FRAME_SAMPLES}>(
+            input [config::FRAME_SAMPLES..].try_into().unwrap());
+        let out_rms = rms_q31_buf::<{N_OUT - DECIMATED_LEN}>(
+            output[DECIMATED_LEN..].try_into().unwrap());
+        info!("FIR dec 12 kHz stopband: in_rms={} out_rms={}", in_rms, out_rms);
+        defmt::assert!(out_rms < in_rms * 0.01, "stopband not attenuated enough");
+        info!("test_fir_decimate_stopband: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 10: Highpass biquad rejects DC
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_highpass_rejects_dc(_state: &mut State) {
+        use dsp_ffi::{ArmBiquadCascadeDf2TInstanceF32, BIQUAD_HP_STATE_LEN,
+                      arm_biquad_cascade_df2T_init_f32, arm_biquad_cascade_df2T_f32};
+        use dsp::{HIGHPASS_COEFFS, HIGHPASS_STAGES};
+        const N: usize = 2000;
+        let input = [1.0f32; N];
+        let mut state = [0.0f32; BIQUAD_HP_STATE_LEN];
+        let mut inst = ArmBiquadCascadeDf2TInstanceF32 {
+            num_stages: 0, p_state: core::ptr::null_mut(), p_coeffs: core::ptr::null(),
+        };
+        unsafe {
+            arm_biquad_cascade_df2T_init_f32(
+                &raw mut inst, HIGHPASS_STAGES as u8,
+                HIGHPASS_COEFFS[0].as_ptr(), state.as_mut_ptr(),
+            );
+            let mut output = [0.0f32; N];
+            arm_biquad_cascade_df2T_f32(&inst, input.as_ptr(), output.as_mut_ptr(), N as u32);
+            let tail_rms = rms_f32_buf::<500>(&output[1500..].try_into().unwrap());
+            info!("HP DC tail_rms={}", tail_rms);
+            defmt::assert!(tail_rms < 1e-3, "HP filter passes DC");
+        }
+        info!("test_highpass_rejects_dc: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11: Highpass biquad passes 1 kHz
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_highpass_passes_1khz(_state: &mut State) {
+        use dsp_ffi::{ArmBiquadCascadeDf2TInstanceF32, BIQUAD_HP_STATE_LEN,
+                      arm_biquad_cascade_df2T_init_f32, arm_biquad_cascade_df2T_f32};
+        use dsp::{HIGHPASS_COEFFS, HIGHPASS_STAGES};
+        const N: usize = 2000;
+        let input = sine_f32_arr::<N>(1_000.0, 20_000.0, 0.5);
+        let mut state = [0.0f32; BIQUAD_HP_STATE_LEN];
+        let mut inst = ArmBiquadCascadeDf2TInstanceF32 {
+            num_stages: 0, p_state: core::ptr::null_mut(), p_coeffs: core::ptr::null(),
+        };
+        unsafe {
+            arm_biquad_cascade_df2T_init_f32(
+                &raw mut inst, HIGHPASS_STAGES as u8,
+                HIGHPASS_COEFFS[0].as_ptr(), state.as_mut_ptr(),
+            );
+            let mut output = [0.0f32; N];
+            arm_biquad_cascade_df2T_f32(&inst, input.as_ptr(), output.as_mut_ptr(), N as u32);
+            let in_rms  = rms_f32_buf::<1500>(&input [500..].try_into().unwrap());
+            let out_rms = rms_f32_buf::<1500>(&output[500..].try_into().unwrap());
+            info!("HP 1 kHz: in={} out={}", in_rms, out_rms);
+            defmt::assert!(out_rms > in_rms * 0.7, "HP attenuates 1 kHz");
+        }
+        info!("test_highpass_passes_1khz: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 12: Lowpass biquad passes 500 Hz
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_lowpass_passes_500hz(_state: &mut State) {
+        use dsp_ffi::{ArmBiquadCascadeDf2TInstanceF32, BIQUAD_LP_STATE_LEN,
+                      arm_biquad_cascade_df2T_init_f32, arm_biquad_cascade_df2T_f32};
+        use dsp::{LOWPASS_COEFFS, LOWPASS_STAGES};
+        const N: usize = 2000;
+        let input = sine_f32_arr::<N>(500.0, 20_000.0, 0.5);
+        let mut state = [0.0f32; BIQUAD_LP_STATE_LEN];
+        let mut inst = ArmBiquadCascadeDf2TInstanceF32 {
+            num_stages: 0, p_state: core::ptr::null_mut(), p_coeffs: core::ptr::null(),
+        };
+        unsafe {
+            arm_biquad_cascade_df2T_init_f32(
+                &raw mut inst, LOWPASS_STAGES as u8,
+                LOWPASS_COEFFS[0].as_ptr(), state.as_mut_ptr(),
+            );
+            let mut output = [0.0f32; N];
+            arm_biquad_cascade_df2T_f32(&inst, input.as_ptr(), output.as_mut_ptr(), N as u32);
+            let in_rms  = rms_f32_buf::<1500>(&input [500..].try_into().unwrap());
+            let out_rms = rms_f32_buf::<1500>(&output[500..].try_into().unwrap());
+            info!("LP 500 Hz: in={} out={}", in_rms, out_rms);
+            defmt::assert!(out_rms > in_rms * 0.7, "LP attenuates 500 Hz");
+        }
+        info!("test_lowpass_passes_500hz: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 13: Lowpass biquad rejects 4 kHz
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_lowpass_rejects_4khz(_state: &mut State) {
+        use dsp_ffi::{ArmBiquadCascadeDf2TInstanceF32, BIQUAD_LP_STATE_LEN,
+                      arm_biquad_cascade_df2T_init_f32, arm_biquad_cascade_df2T_f32};
+        use dsp::{LOWPASS_COEFFS, LOWPASS_STAGES};
+        const N: usize = 2000;
+        let input = sine_f32_arr::<N>(4_000.0, 20_000.0, 0.5);
+        let mut state = [0.0f32; BIQUAD_LP_STATE_LEN];
+        let mut inst = ArmBiquadCascadeDf2TInstanceF32 {
+            num_stages: 0, p_state: core::ptr::null_mut(), p_coeffs: core::ptr::null(),
+        };
+        unsafe {
+            arm_biquad_cascade_df2T_init_f32(
+                &raw mut inst, LOWPASS_STAGES as u8,
+                LOWPASS_COEFFS[0].as_ptr(), state.as_mut_ptr(),
+            );
+            let mut output = [0.0f32; N];
+            arm_biquad_cascade_df2T_f32(&inst, input.as_ptr(), output.as_mut_ptr(), N as u32);
+            let in_rms  = rms_f32_buf::<1500>(&input [500..].try_into().unwrap());
+            let out_rms = rms_f32_buf::<1500>(&output[500..].try_into().unwrap());
+            info!("LP 4 kHz: in={} out={}", in_rms, out_rms);
+            defmt::assert!(out_rms < in_rms * 0.2, "LP passes 4 kHz");
+        }
+        info!("test_lowpass_rejects_4khz: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 14: Compressor reduces a loud signal
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_compressor_reduces_loud(_state: &mut State) {
+        let input = [0.8f32; 2000];
+        let mut comp = dsp::Compressor::new();
+        let mut output = [0.0f32; 2000];
+        comp.process(&input, &mut output);
+        let in_rms  = rms_f32_buf::<1500>(&input [500..].try_into().unwrap());
+        let out_rms = rms_f32_buf::<1500>(&output[500..].try_into().unwrap());
+        info!("Compressor: in={} out={}", in_rms, out_rms);
+        defmt::assert!(out_rms < in_rms, "Compressor did not reduce level");
+        info!("test_compressor_reduces_loud: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 15: Sample format conversion helpers
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_conversion_helpers(_state: &mut State) {
+        defmt::assert!(dsp::adc_to_q31(2048) == 0,  "midscale should be zero");
+        defmt::assert!(dsp::adc_to_q31(4095) > 0,   "full-scale should be positive");
+        for &x in &[0.0f32, 0.5, -0.5, 0.999, -0.999] {
+            let q    = dsp::f32_to_q31(x);
+            let back = dsp::q31_to_f32(q);
+            defmt::assert!((back - x).abs() < 1e-6, "Q31 round-trip failed");
+        }
+        info!("test_conversion_helpers: PASS");
     }
 }
