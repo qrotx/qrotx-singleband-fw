@@ -18,6 +18,7 @@
 //   test_adc_mean_midscale   — ADC mean ≈ 2048 (voltage divider at VDDA/2)
 //   test_dsp_timing          — process_half() fits within 500 µs budget
 //   test_dma_rate            — ~10 full-transfer events in 10 ms
+//   test_ssb_analytic_signal — SSB filter suppresses negative frequency ≥ 40 dB
 
 #![no_std]
 #![no_main]
@@ -611,7 +612,128 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 15: Sample format conversion helpers
+    // Test 15: SSB filter produces a true analytic signal
+    //
+    // Feed a 1 kHz sine into arm_fir_ssb_f32.  The complex output
+    // z[n] = I[n] + j·Q[n] must have energy at +1 kHz but not at −1 kHz.
+    //
+    // We compute two DFT bins of z[n] directly (no FFT needed):
+    //
+    //   Z₊ = Σ z[n]·exp(−j·2π·f·n/fs)   ← positive frequency
+    //   Z₋ = Σ z[n]·exp(+j·2π·f·n/fs)   ← negative frequency
+    //
+    // For a perfect analytic signal |Z₊| ≈ A·N and |Z₋| ≈ 0.
+    // A 257-tap equiripple filter should achieve at least 40 dB rejection
+    // (|Z₊| / |Z₋| > 100).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_ssb_analytic_signal(_state: &mut State) {
+        use dsp_ffi::{ArmFirInstanceF32, SSB_STATE_LEN, arm_fir_ssb_f32};
+        use dsp::{SSB_COEFFS_INTERLEAVED, SSB_FILTER_TAPS, DECIMATED_LEN};
+
+        // Warmup flushes the 257-tap delay line (group delay ≈ 128 samples =
+        // 13 frames); 15 gives a small margin.
+        const FRAMES_WARMUP:   usize = 15;
+        const FRAMES_MEASURE:  usize = 20;  // 200 samples = 10 full periods @ 1 kHz
+        const N_TOTAL:   usize = (FRAMES_WARMUP + FRAMES_MEASURE) * DECIMATED_LEN;
+        const N_MEASURE: usize = FRAMES_MEASURE * DECIMATED_LEN;
+
+        // Local filter instance — does not disturb the global dsp::SSB_INST.
+        let mut state_buf = [0.0f32; SSB_STATE_LEN];
+        let inst = ArmFirInstanceF32 {
+            num_taps: SSB_FILTER_TAPS as u16,
+            p_state:  state_buf.as_mut_ptr(),
+            p_coeffs: SSB_COEFFS_INTERLEAVED.as_ptr(),
+        };
+
+        // 1 kHz sine at 20 kHz, amplitude 0.5
+        let input = sine_f32_arr::<N_TOTAL>(1_000.0, 20_000.0, 0.5);
+
+        // Warmup: run the filter to fill the delay line; discard output.
+        for frame in 0..FRAMES_WARMUP {
+            let mut di = [0.0f32; DECIMATED_LEN];
+            let mut dq = [0.0f32; DECIMATED_LEN];
+            unsafe {
+                arm_fir_ssb_f32(
+                    &inst,
+                    input[frame * DECIMATED_LEN..].as_ptr(),
+                    di.as_mut_ptr(), dq.as_mut_ptr(),
+                    DECIMATED_LEN as u32,
+                );
+            }
+        }
+
+        // Measurement: collect N_MEASURE I/Q samples.
+        let mut i_buf = [0.0f32; N_MEASURE];
+        let mut q_buf = [0.0f32; N_MEASURE];
+        for frame in 0..FRAMES_MEASURE {
+            let in_off  = (FRAMES_WARMUP + frame) * DECIMATED_LEN;
+            let out_off = frame * DECIMATED_LEN;
+            unsafe {
+                arm_fir_ssb_f32(
+                    &inst,
+                    input[in_off..].as_ptr(),
+                    i_buf[out_off..].as_mut_ptr(),
+                    q_buf[out_off..].as_mut_ptr(),
+                    DECIMATED_LEN as u32,
+                );
+            }
+        }
+
+        // Compute DFT of z[n] = I[n] + j·Q[n] at ±1 kHz.
+        // Phase angle for sample n: θ = 2π · 1000 · n / 20000 = 2π·n/20.
+        // A constant filter group delay shifts all phasors by the same angle —
+        // it cancels in the magnitude, so we do not need to compensate for it.
+        let mut re_pos = 0.0f32;
+        let mut im_pos = 0.0f32;
+        let mut re_neg = 0.0f32;
+        let mut im_neg = 0.0f32;
+
+        for n in 0..N_MEASURE {
+            let theta = 2.0 * core::f32::consts::PI * 1_000.0 * n as f32 / 20_000.0;
+            let c = libm::cosf(theta);
+            let s = libm::sinf(theta);
+            let i = i_buf[n];
+            let q = q_buf[n];
+
+            // Z₊: multiply by exp(−j·θ) = cos − j·sin
+            re_pos += i * c + q * s;
+            im_pos += q * c - i * s;
+
+            // Z₋: multiply by exp(+j·θ) = cos + j·sin
+            re_neg += i * c - q * s;
+            im_neg += q * c + i * s;
+        }
+
+        let mag_pos = libm::sqrtf(re_pos * re_pos + im_pos * im_pos);
+        let mag_neg = libm::sqrtf(re_neg * re_neg + im_neg * im_neg);
+        let rejection_db = 20.0 * libm::log10f(mag_pos / (mag_neg + 1e-10));
+
+        info!(
+            "SSB analytic: |+1kHz|={} |-1kHz|={} rejection={} dB",
+            mag_pos / N_MEASURE as f32,
+            mag_neg / N_MEASURE as f32,
+            rejection_db,
+        );
+
+        // Passband must not be attenuated to nothing (sanity check).
+        defmt::assert!(
+            mag_pos > 0.1 * N_MEASURE as f32,
+            "SSB passband too weak: |+1kHz|={}",
+            mag_pos,
+        );
+        // Negative-frequency sideband must be suppressed by at least 40 dB.
+        defmt::assert!(
+            mag_pos > mag_neg * 100.0,
+            "SSB sideband rejection < 40 dB: |+1kHz|={} |-1kHz|={}",
+            mag_pos, mag_neg,
+        );
+
+        info!("test_ssb_analytic_signal: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 16: Sample format conversion helpers
     // -----------------------------------------------------------------------
     #[test]
     fn test_conversion_helpers(_state: &mut State) {
