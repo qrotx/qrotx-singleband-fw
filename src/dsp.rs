@@ -464,9 +464,10 @@ pub struct PipelineTimings {
     pub stage3d_lowpass:     u32,  // Chebyshev I LP biquad (CMSIS-DSP f32)
     pub stage4_ssb:          u32,  // 257-tap analytic FIR I+Q (C arm_fir_ssb_f32)
     pub stage5a_f32_to_q31:  u32,  // f32 → Q31 conversion (I and Q, 10 samples each)
-    pub stage5b_interpolate: u32,  // 10:1 FIR interpolation I+Q (CMSIS-DSP Q31)
-    pub stage5c_cordic:      u32,  // CORDIC MODULUS + outphasing (100 samples)
-    pub total:               u32,  // wall-clock total (includes all overhead)
+    pub stage5b_interpolate:  u32,  // 10:1 FIR interpolation I+Q (CMSIS-DSP Q31)
+    pub stage5c_cordic:       u32,  // CORDIC MODULUS vector (zero-overhead, 100 samples)
+    pub stage5c_outphasing:   u32,  // outphasing: mod/phase → PwmSample (100 samples)
+    pub total:                u32,  // wall-clock total (includes all overhead)
 }
 
 /// Read DWT CYCCNT directly. Caller must have enabled TRCENA and CYCCNTENA.
@@ -577,11 +578,13 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
     );
     let t5b = cyccnt();
 
-    // Stage 5c: CORDIC polar conversion + outphasing
+    // Stage 5c-i: CORDIC MODULUS vector (zero-overhead pipeline)
     let mut cordic_mod   = [0i32; FRAME_SAMPLES];
     let mut cordic_phase = [0i32; FRAME_SAMPLES];
     cordic_modulus_vec(&interp_i, &interp_q, &mut cordic_mod, &mut cordic_phase);
+    let t5c = cyccnt();
 
+    // Stage 5c-ii: outphasing — mod/phase → PwmSample
     for (i, slot) in hrtim_out.iter_mut().enumerate() {
         let modulus = cordic_mod[i];
         let phase   = cordic_phase[i];
@@ -615,7 +618,8 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
         stage4_ssb:          t4.wrapping_sub(t3d),
         stage5a_f32_to_q31:  t5a.wrapping_sub(t4),
         stage5b_interpolate: t5b.wrapping_sub(t5a),
-        stage5c_cordic:      t_end.wrapping_sub(t5b),
+        stage5c_cordic:      t5c.wrapping_sub(t5b),
+        stage5c_outphasing:  t_end.wrapping_sub(t5c),
         total:               t_end.wrapping_sub(t_start),
     }
 }
