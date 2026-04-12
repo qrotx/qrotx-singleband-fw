@@ -303,14 +303,15 @@ mod tests {
     // -----------------------------------------------------------------------
     // Test 6: DSP process_half() execution time
     //
-    // One call to process_first_half() must complete within the 500 µs
-    // half-buffer period.  At 168 MHz that is 84 000 cycles.
+    // One call must complete within the 500 µs half-buffer period.
+    // At 168 MHz that is 84 000 cycles.  Per-stage breakdowns are logged
+    // so the most expensive stages can be identified at a glance.
     // -----------------------------------------------------------------------
     #[test]
     fn test_dsp_timing(_state: &mut State) {
         info!("test: DSP process_half timing");
 
-        // Ensure DWT CYCCNT is running.
+        // Enable DWT CYCCNT — required by process_first_half_timed().
         unsafe {
             let demcr = 0xE000_EDFC as *mut u32;
             demcr.write_volatile(demcr.read_volatile() | (1 << 24)); // TRCENA
@@ -318,15 +319,26 @@ mod tests {
             ctrl.write_volatile(ctrl.read_volatile() | 1);           // CYCCNTENA
         }
 
-        let start = cortex_m::peripheral::DWT::cycle_count();
-        unsafe { dsp::process_first_half() };
-        let elapsed = cortex_m::peripheral::DWT::cycle_count().wrapping_sub(start);
+        let t = unsafe { dsp::process_first_half_timed() };
 
-        info!("process_half: {} cycles ({} µs)", elapsed, elapsed / 168);
+        info!("--- DSP pipeline timing @ 168 MHz ---");
+        info!("  Stage 1  adc_to_q31      {} cy  ({} µs)", t.stage1_adc_to_q31,   t.stage1_adc_to_q31   / 168);
+        info!("  Stage 2  fir_decimate    {} cy  ({} µs)", t.stage2_fir_decimate,  t.stage2_fir_decimate  / 168);
+        info!("  Stage 3a q31_to_f32      {} cy  ({} µs)", t.stage3a_q31_to_f32,  t.stage3a_q31_to_f32  / 168);
+        info!("  Stage 3b highpass        {} cy  ({} µs)", t.stage3b_highpass,     t.stage3b_highpass     / 168);
+        info!("  Stage 3c compress        {} cy  ({} µs)", t.stage3c_compress,     t.stage3c_compress     / 168);
+        info!("  Stage 3d lowpass         {} cy  ({} µs)", t.stage3d_lowpass,      t.stage3d_lowpass      / 168);
+        info!("  Stage 4  ssb_fir         {} cy  ({} µs)", t.stage4_ssb,           t.stage4_ssb           / 168);
+        info!("  Stage 5a f32_to_q31      {} cy  ({} µs)", t.stage5a_f32_to_q31,  t.stage5a_f32_to_q31  / 168);
+        info!("  Stage 5b interpolate     {} cy  ({} µs)", t.stage5b_interpolate,  t.stage5b_interpolate  / 168);
+        info!("  Stage 5c cordic          {} cy  ({} µs)", t.stage5c_cordic,       t.stage5c_cordic       / 168);
+        info!("  ----------------------------------------");
+        info!("  Total                    {} cy  ({} µs)  budget: 84000", t.total, t.total / 168);
+
         defmt::assert!(
-            elapsed < 84_000,
+            t.total < 84_000,
             "process_half too slow: {} cycles (budget: 84 000 = 500 µs @ 168 MHz)",
-            elapsed
+            t.total
         );
 
         info!("test_dsp_timing: PASS");

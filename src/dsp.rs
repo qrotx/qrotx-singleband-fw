@@ -407,6 +407,172 @@ pub unsafe fn process_second_half() {
 }
 
 // ---------------------------------------------------------------------------
+// Instrumented pipeline variant — for test_dsp_timing in hw_tests.rs
+// ---------------------------------------------------------------------------
+
+/// Per-stage cycle counts from one `process_first_half_timed()` call.
+/// All fields are DWT CYCCNT deltas; caller must enable DWT before calling.
+pub struct PipelineTimings {
+    pub stage1_adc_to_q31:   u32,  // u16 → Q31 conversion (100 samples)
+    pub stage2_fir_decimate:  u32,  // 10:1 FIR decimation (CMSIS-DSP Q31)
+    pub stage3a_q31_to_f32:  u32,  // Q31 → f32 conversion (10 samples)
+    pub stage3b_highpass:    u32,  // Chebyshev I HP biquad (CMSIS-DSP f32)
+    pub stage3c_compress:    u32,  // Envelope-follower compressor (Rust)
+    pub stage3d_lowpass:     u32,  // Chebyshev I LP biquad (CMSIS-DSP f32)
+    pub stage4_ssb:          u32,  // 257-tap analytic FIR I+Q (C arm_fir_ssb_f32)
+    pub stage5a_f32_to_q31:  u32,  // f32 → Q31 conversion (I and Q, 10 samples each)
+    pub stage5b_interpolate: u32,  // 10:1 FIR interpolation I+Q (CMSIS-DSP Q31)
+    pub stage5c_cordic:      u32,  // CORDIC MODULUS + outphasing (100 samples)
+    pub total:               u32,  // wall-clock total (includes all overhead)
+}
+
+/// Read DWT CYCCNT directly. Caller must have enabled TRCENA and CYCCNTENA.
+#[inline(always)]
+fn cyccnt() -> u32 {
+    unsafe { (0xE000_1004 as *const u32).read_volatile() }
+}
+
+/// Run the first-half pipeline with per-stage DWT timestamps.
+///
+/// DWT CYCCNT must be running before this is called (see test_dsp_timing).
+///
+/// # Safety
+/// Same requirements as `process_first_half`.
+#[allow(static_mut_refs)]
+pub unsafe fn process_first_half_timed() -> PipelineTimings {
+    let adc      = adc_buf_first_half();
+    let hrtim_out = hrtim_buf_first_half_mut();
+
+    let t_start = cyccnt();
+
+    // Stage 1: ADC u16 → Q31
+    let mut q31_in = [0i32; FRAME_SAMPLES];
+    for (dst, &src) in q31_in.iter_mut().zip(adc.iter()) {
+        *dst = adc_to_q31(src);
+    }
+    let t1 = cyccnt();
+
+    // Stage 2: 10:1 FIR decimation → 10 Q31 samples at 20 kHz
+    let mut decimated = [0i32; DECIMATED_LEN];
+    arm_fir_decimate_q31(
+        &FIR_DEC_INST,
+        q31_in.as_ptr(),
+        decimated.as_mut_ptr(),
+        FRAME_SAMPLES as u32,
+    );
+    let t2 = cyccnt();
+
+    // Stage 3a: Q31 → f32
+    let mut audio = [0.0f32; DECIMATED_LEN];
+    for (dst, &src) in audio.iter_mut().zip(decimated.iter()) {
+        *dst = q31_to_f32(src);
+    }
+    let t3a = cyccnt();
+
+    // Stage 3b: highpass IIR
+    let mut hp_out = [0.0f32; DECIMATED_LEN];
+    arm_biquad_cascade_df2T_f32(
+        &BIQUAD_HP_INST,
+        audio.as_ptr(),
+        hp_out.as_mut_ptr(),
+        DECIMATED_LEN as u32,
+    );
+    let t3b = cyccnt();
+
+    // Stage 3c: compressor
+    let mut compressed = [0.0f32; DECIMATED_LEN];
+    COMPRESSOR.process(&hp_out, &mut compressed);
+    let t3c = cyccnt();
+
+    // Stage 3d: lowpass IIR
+    let mut lp_out = [0.0f32; DECIMATED_LEN];
+    arm_biquad_cascade_df2T_f32(
+        &BIQUAD_LP_INST,
+        compressed.as_ptr(),
+        lp_out.as_mut_ptr(),
+        DECIMATED_LEN as u32,
+    );
+    let t3d = cyccnt();
+
+    // Stage 4: SSB analytic FIR → I and Q
+    let mut ssb_i = [0.0f32; DECIMATED_LEN];
+    let mut ssb_q = [0.0f32; DECIMATED_LEN];
+    arm_fir_ssb_f32(
+        &SSB_INST,
+        lp_out.as_ptr(),
+        ssb_i.as_mut_ptr(),
+        ssb_q.as_mut_ptr(),
+        DECIMATED_LEN as u32,
+    );
+    let t4 = cyccnt();
+
+    // Stage 5a: f32 → Q31 (I and Q)
+    let mut q31_i = [0i32; DECIMATED_LEN];
+    let mut q31_q = [0i32; DECIMATED_LEN];
+    for (dst, &src) in q31_i.iter_mut().zip(ssb_i.iter()) {
+        *dst = f32_to_q31(src);
+    }
+    for (dst, &src) in q31_q.iter_mut().zip(ssb_q.iter()) {
+        *dst = f32_to_q31(src);
+    }
+    let t5a = cyccnt();
+
+    // Stage 5b: 10:1 FIR interpolation (I and Q)
+    let mut interp_i = [0i32; FRAME_SAMPLES];
+    let mut interp_q = [0i32; FRAME_SAMPLES];
+    arm_fir_interpolate_q31(
+        &FIR_INTERP_I_INST,
+        q31_i.as_ptr(),
+        interp_i.as_mut_ptr(),
+        DECIMATED_LEN as u32,
+    );
+    arm_fir_interpolate_q31(
+        &FIR_INTERP_Q_INST,
+        q31_q.as_ptr(),
+        interp_q.as_mut_ptr(),
+        DECIMATED_LEN as u32,
+    );
+    let t5b = cyccnt();
+
+    // Stage 5c: CORDIC polar conversion + outphasing
+    for (i, slot) in hrtim_out.iter_mut().enumerate() {
+        let (modulus, phase) = cordic_modulus(interp_i[i], interp_q[i]);
+
+        let mag = (((modulus as i64) >> 15) * AMPLITUDE as i64) >> 16;
+        let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
+
+        let phase_ticks =
+            (((-(phase as i64)) >> 15) * (PWM_PERIOD as i64 / 2) >> 16)
+            + PWM_PERIOD as i64 / 2;
+        let ta_cmp1 = (phase_ticks as u32) % PWM_PERIOD;
+        let ta_cmp2 = (ta_cmp1 + PWM_PERIOD / 2) % PWM_PERIOD;
+
+        *slot = PwmSample {
+            tim_a_cmp1: ta_cmp1,
+            tim_a_cmp2: ta_cmp2,
+            tim_b_cmp1: ta_cmp1,
+            tim_b_cmp2: ta_cmp2,
+            tim_c_cmp1: tc_cmp1,
+        };
+    }
+    let t_end = cyccnt();
+
+    PipelineTimings {
+        stage1_adc_to_q31:   t1.wrapping_sub(t_start),
+        stage2_fir_decimate:  t2.wrapping_sub(t1),
+        stage3a_q31_to_f32:  t3a.wrapping_sub(t2),
+        stage3b_highpass:    t3b.wrapping_sub(t3a),
+        stage3c_compress:    t3c.wrapping_sub(t3b),
+        stage3d_lowpass:     t3d.wrapping_sub(t3c),
+        stage4_ssb:          t4.wrapping_sub(t3d),
+        stage5a_f32_to_q31:  t5a.wrapping_sub(t4),
+        stage5b_interpolate: t5b.wrapping_sub(t5a),
+        stage5c_cordic:      t_end.wrapping_sub(t5b),
+        total:               t_end.wrapping_sub(t_start),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Internal pipeline implementation
 // ---------------------------------------------------------------------------
 
