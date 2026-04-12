@@ -383,7 +383,7 @@ pub fn init() {
 /// there is no polling loop and no idle cycles between successive calculations.
 ///
 /// CORDIC_CSR must already be configured for MODULUS, NARGS=1, NRES=1 (Q1.31).
-unsafe fn cordic_modulus_vec(
+pub unsafe fn cordic_modulus_vec(
     i_vals:    &[i32],
     q_vals:    &[i32],
     mod_out:   &mut [i32],

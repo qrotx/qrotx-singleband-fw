@@ -20,6 +20,7 @@
 //   test_dma_rate            — ~10 full-transfer events in 10 ms
 //   test_fir_interpolate_passband — 1 kHz passes through 10:1 interpolator
 //   test_ssb_analytic_signal — SSB filter suppresses negative frequency ≥ 40 dB
+//   test_cordic_modulus      — spot-checks CORDIC modulus and output ordering
 
 #![no_std]
 #![no_main]
@@ -812,7 +813,68 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 17: Sample format conversion helpers
+    // Test 17: CORDIC modulus — known I/Q pairs and output ordering
+    //
+    // Spot-checks cordic_modulus_vec against analytically known results and
+    // verifies that outputs are returned in the same order as inputs (the
+    // zero-overhead pipeline could theoretically mis-sequence results).
+    //
+    // CORDIC MODULUS in Q1.31:
+    //   (i32::MAX, 0)         → mod ≈ i32::MAX,      phase ≈ 0
+    //   (0,        i32::MAX)  → mod ≈ i32::MAX,      phase ≈ i32::MAX/2  (π/2)
+    //   (HLF,      HLF)       → mod ≈ 0x5A82_7999,   phase ≈ i32::MAX/4  (π/4)
+    //   (i32::MAX, 0)         → same as first — ordering sentinel
+    //
+    // Tolerance: 1 % of i32::MAX (~21 M) for modulus; 2 % for phase.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_cordic_modulus(_state: &mut State) {
+        // CORDIC is already configured by dsp::init() called in #[init].
+        const MAX: i32 = i32::MAX;
+        const HLF: i32 = i32::MAX / 2;
+
+        // Tolerance: 1 % of i32::MAX for modulus, 2 % for phase.
+        const TOL_MOD:   i32 = (i32::MAX as i64 / 100) as i32;
+        const TOL_PHASE: i32 = (i32::MAX as i64 / 50)  as i32;
+
+        let i_vals = [MAX, 0,   HLF, MAX];
+        let q_vals = [0,   MAX, HLF, 0  ];
+
+        let mut mod_out   = [0i32; 4];
+        let mut phase_out = [0i32; 4];
+        unsafe {
+            dsp::cordic_modulus_vec(&i_vals, &q_vals, &mut mod_out, &mut phase_out);
+        }
+
+        info!("CORDIC results:");
+        info!("  [0] mod={} phase={}", mod_out[0], phase_out[0]);
+        info!("  [1] mod={} phase={}", mod_out[1], phase_out[1]);
+        info!("  [2] mod={} phase={}", mod_out[2], phase_out[2]);
+        info!("  [3] mod={} phase={}", mod_out[3], phase_out[3]);
+
+        // [0] (MAX, 0): modulus ≈ MAX, phase ≈ 0
+        defmt::assert!((mod_out[0] - MAX).abs()     < TOL_MOD,   "[0] mod wrong");
+        defmt::assert!( phase_out[0].abs()           < TOL_PHASE, "[0] phase wrong");
+
+        // [1] (0, MAX): modulus ≈ MAX, phase ≈ MAX/2 (π/2 in Q1.31)
+        defmt::assert!((mod_out[1] - MAX).abs()     < TOL_MOD,   "[1] mod wrong");
+        defmt::assert!((phase_out[1] - MAX / 2).abs() < TOL_PHASE, "[1] phase wrong");
+
+        // [2] (HLF, HLF): modulus ≈ 0x5A82_7999 (√2/2 × MAX), phase ≈ MAX/4 (π/4)
+        let expected_mod: i32 = 0x5A82_7999_u32 as i32;
+        let expected_phase: i32 = MAX / 4;
+        defmt::assert!((mod_out[2] - expected_mod).abs()     < TOL_MOD,   "[2] mod wrong");
+        defmt::assert!((phase_out[2] - expected_phase).abs() < TOL_PHASE, "[2] phase wrong");
+
+        // [3] (MAX, 0): same as [0] — verifies pipeline ordering is preserved
+        defmt::assert!((mod_out[3] - MAX).abs()     < TOL_MOD,   "[3] mod wrong (ordering?)");
+        defmt::assert!( phase_out[3].abs()           < TOL_PHASE, "[3] phase wrong (ordering?)");
+
+        info!("test_cordic_modulus: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 18: Sample format conversion helpers
     // -----------------------------------------------------------------------
     #[test]
     fn test_conversion_helpers(_state: &mut State) {
