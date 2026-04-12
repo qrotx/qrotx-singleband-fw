@@ -319,7 +319,7 @@ mod tests {
             ctrl.write_volatile(ctrl.read_volatile() | 1);           // CYCCNTENA
         }
 
-        let t = unsafe { dsp::process_first_half_timed() };
+        let t = unsafe { dsp::process_first_half() };
 
         info!("--- DSP pipeline timing @ 168 MHz ---");
         info!("  Stage 1  adc_to_q31      {} cy  ({} µs)", t.stage1_adc_to_q31,   t.stage1_adc_to_q31   / 168);

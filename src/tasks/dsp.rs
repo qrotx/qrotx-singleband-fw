@@ -35,14 +35,14 @@ pub async fn dsp_task() {
             PROCESS_FIRST_HALF.store(false, Ordering::Release);
             // Safety: called only from this task; DMA is writing the second
             // half while we process the first.
-            unsafe { dsp::process_first_half() };
+            let _ = unsafe { dsp::process_first_half() };
         }
 
         if PROCESS_SECOND_HALF.load(Ordering::Acquire) {
             PROCESS_SECOND_HALF.store(false, Ordering::Release);
             // Safety: called only from this task; DMA is writing the first
             // half while we process the second.
-            unsafe { dsp::process_second_half() };
+            let _ = unsafe { dsp::process_second_half() };
         }
     }
 }

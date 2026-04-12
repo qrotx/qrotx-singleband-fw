@@ -426,35 +426,14 @@ unsafe fn cordic_modulus_vec(
 }
 
 // ---------------------------------------------------------------------------
-// Public pipeline entry points — called from the DSP Embassy task
+// Per-stage timing — always collected; ~11 volatile reads overhead (~11 cy).
+// Fields are DWT CYCCNT deltas; meaningful only when DWT is enabled.
 // ---------------------------------------------------------------------------
 
-/// Process the first half of the ADC ping-pong buffer (samples 0..FRAME_SAMPLES).
-///
-/// # Safety
-/// Must be called only from the context that owns the first buffer half.
-pub unsafe fn process_first_half() {
-    let adc = adc_buf_first_half();
-    let hrtim_out = hrtim_buf_first_half_mut();
-    process_half(adc, hrtim_out);
-}
-
-/// Process the second half of the ADC ping-pong buffer.
-///
-/// # Safety
-/// Must be called only after the DMA transfer-complete flag has been set.
-pub unsafe fn process_second_half() {
-    let adc = adc_buf_second_half();
-    let hrtim_out = hrtim_buf_second_half_mut();
-    process_half(adc, hrtim_out);
-}
-
-// ---------------------------------------------------------------------------
-// Instrumented pipeline variant — for test_dsp_timing in hw_tests.rs
-// ---------------------------------------------------------------------------
-
-/// Per-stage cycle counts from one `process_first_half_timed()` call.
-/// All fields are DWT CYCCNT deltas; caller must enable DWT before calling.
+/// Per-stage cycle counts returned by every `process_first/second_half()` call.
+/// All fields are DWT CYCCNT deltas.  Enable DWT (TRCENA + CYCCNTENA) to get
+/// real numbers; if DWT is off all fields are zero.  The DSP task drops the
+/// return value so the compiler eliminates the dead arithmetic at -Ofast.
 pub struct PipelineTimings {
     pub stage1_adc_to_q31:   u32,  // u16 → Q31 conversion (100 samples)
     pub stage2_fir_decimate:  u32,  // 10:1 FIR decimation (CMSIS-DSP Q31)
@@ -470,33 +449,57 @@ pub struct PipelineTimings {
     pub total:                u32,  // wall-clock total (includes all overhead)
 }
 
-/// Read DWT CYCCNT directly. Caller must have enabled TRCENA and CYCCNTENA.
+/// Read DWT CYCCNT directly.
 #[inline(always)]
 fn cyccnt() -> u32 {
     unsafe { (0xE000_1004 as *const u32).read_volatile() }
 }
 
-/// Run the first-half pipeline with per-stage DWT timestamps.
+// ---------------------------------------------------------------------------
+// Public pipeline entry points — called from the DSP Embassy task
+// ---------------------------------------------------------------------------
+
+/// Process the first half of the ADC ping-pong buffer (samples 0..FRAME_SAMPLES).
 ///
-/// DWT CYCCNT must be running before this is called (see test_dsp_timing).
+/// Returns per-stage DWT cycle counts; the DSP task drops them.  Enable DWT
+/// before calling if the timing data is needed (see test_dsp_timing).
 ///
 /// # Safety
-/// Same requirements as `process_first_half`.
-#[allow(static_mut_refs)]
-pub unsafe fn process_first_half_timed() -> PipelineTimings {
-    let adc      = adc_buf_first_half();
+/// Must be called only from the context that owns the first buffer half.
+pub unsafe fn process_first_half() -> PipelineTimings {
+    let adc = adc_buf_first_half();
     let hrtim_out = hrtim_buf_first_half_mut();
+    process_half(adc, hrtim_out)
+}
 
+/// Process the second half of the ADC ping-pong buffer.
+///
+/// # Safety
+/// Must be called only after the DMA transfer-complete flag has been set.
+pub unsafe fn process_second_half() -> PipelineTimings {
+    let adc = adc_buf_second_half();
+    let hrtim_out = hrtim_buf_second_half_mut();
+    process_half(adc, hrtim_out)
+}
+
+// ---------------------------------------------------------------------------
+// Internal pipeline implementation
+// ---------------------------------------------------------------------------
+
+#[allow(static_mut_refs)]
+unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineTimings {
+    debug_assert_eq!(adc_in.len(),    FRAME_SAMPLES);
+    debug_assert_eq!(hrtim_out.len(), FRAME_SAMPLES);
+
+    // --- Stage 1: ADC u16 → Q31 (DC centred) ---
     let t_start = cyccnt();
-
-    // Stage 1: ADC u16 → Q31
     let mut q31_in = [0i32; FRAME_SAMPLES];
-    for (dst, &src) in q31_in.iter_mut().zip(adc.iter()) {
+    for (dst, &src) in q31_in.iter_mut().zip(adc_in.iter()) {
         *dst = adc_to_q31(src);
     }
     let t1 = cyccnt();
 
-    // Stage 2: 10:1 FIR decimation → 10 Q31 samples at 20 kHz
+    // --- Stage 2: 10:1 FIR decimation → 10 Q31 samples at 20 kHz ---
     let mut decimated = [0i32; DECIMATED_LEN];
     arm_fir_decimate_q31(
         &FIR_DEC_INST,
@@ -506,14 +509,14 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
     );
     let t2 = cyccnt();
 
-    // Stage 3a: Q31 → f32
+    // --- Stage 3a: Q31 → f32 ---
     let mut audio = [0.0f32; DECIMATED_LEN];
     for (dst, &src) in audio.iter_mut().zip(decimated.iter()) {
         *dst = q31_to_f32(src);
     }
     let t3a = cyccnt();
 
-    // Stage 3b: highpass IIR
+    // --- Stage 3b: highpass IIR (Chebyshev I, 200 Hz) ---
     let mut hp_out = [0.0f32; DECIMATED_LEN];
     arm_biquad_cascade_df2T_f32(
         &BIQUAD_HP_INST,
@@ -523,12 +526,12 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
     );
     let t3b = cyccnt();
 
-    // Stage 3c: compressor
+    // --- Stage 3c: compression ---
     let mut compressed = [0.0f32; DECIMATED_LEN];
     COMPRESSOR.process(&hp_out, &mut compressed);
     let t3c = cyccnt();
 
-    // Stage 3d: lowpass IIR
+    // --- Stage 3d: lowpass IIR (Chebyshev I, 2800 Hz) ---
     let mut lp_out = [0.0f32; DECIMATED_LEN];
     arm_biquad_cascade_df2T_f32(
         &BIQUAD_LP_INST,
@@ -538,7 +541,7 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
     );
     let t3d = cyccnt();
 
-    // Stage 4: SSB analytic FIR → I and Q
+    // --- Stage 4: SSB analytic FIR → I and Q paths ---
     let mut ssb_i = [0.0f32; DECIMATED_LEN];
     let mut ssb_q = [0.0f32; DECIMATED_LEN];
     arm_fir_ssb_f32(
@@ -550,7 +553,7 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
     );
     let t4 = cyccnt();
 
-    // Stage 5a: f32 → Q31 (I and Q)
+    // --- Stage 5a: f32 → Q31 ---
     let mut q31_i = [0i32; DECIMATED_LEN];
     let mut q31_q = [0i32; DECIMATED_LEN];
     for (dst, &src) in q31_i.iter_mut().zip(ssb_i.iter()) {
@@ -561,7 +564,7 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
     }
     let t5a = cyccnt();
 
-    // Stage 5b: 10:1 FIR interpolation (I and Q)
+    // --- Stage 5b: 10:1 FIR interpolation → 100 Q31 samples at 200 kHz ---
     let mut interp_i = [0i32; FRAME_SAMPLES];
     let mut interp_q = [0i32; FRAME_SAMPLES];
     arm_fir_interpolate_q31(
@@ -578,13 +581,12 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
     );
     let t5b = cyccnt();
 
-    // Stage 5c-i: CORDIC MODULUS vector (zero-overhead pipeline)
+    // --- Stage 5c: CORDIC polar conversion + outphasing → HRTIM compare values ---
     let mut cordic_mod   = [0i32; FRAME_SAMPLES];
     let mut cordic_phase = [0i32; FRAME_SAMPLES];
     cordic_modulus_vec(&interp_i, &interp_q, &mut cordic_mod, &mut cordic_phase);
     let t5c = cyccnt();
 
-    // Stage 5c-ii: outphasing — mod/phase → PwmSample
     for (i, slot) in hrtim_out.iter_mut().enumerate() {
         let modulus = cordic_mod[i];
         let phase   = cordic_phase[i];
@@ -621,122 +623,5 @@ pub unsafe fn process_first_half_timed() -> PipelineTimings {
         stage5c_cordic:      t5c.wrapping_sub(t5b),
         stage5c_outphasing:  t_end.wrapping_sub(t5c),
         total:               t_end.wrapping_sub(t_start),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Internal pipeline implementation
-// ---------------------------------------------------------------------------
-
-#[allow(static_mut_refs)]
-unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) {
-    debug_assert_eq!(adc_in.len(),    FRAME_SAMPLES);
-    debug_assert_eq!(hrtim_out.len(), FRAME_SAMPLES);
-
-    // --- Stage 1: ADC u16 → Q31 (DC centred) ---
-    let mut q31_in = [0i32; FRAME_SAMPLES];
-    for (dst, &src) in q31_in.iter_mut().zip(adc_in.iter()) {
-        *dst = adc_to_q31(src);
-    }
-
-    // --- Stage 2: 10:1 FIR decimation → 10 Q31 samples at 20 kHz ---
-    let mut decimated = [0i32; DECIMATED_LEN];
-    arm_fir_decimate_q31(
-        &FIR_DEC_INST,
-        q31_in.as_ptr(),
-        decimated.as_mut_ptr(),
-        FRAME_SAMPLES as u32,
-    );
-
-    // --- Stage 3a: Q31 → f32 ---
-    let mut audio = [0.0f32; DECIMATED_LEN];
-    for (dst, &src) in audio.iter_mut().zip(decimated.iter()) {
-        *dst = q31_to_f32(src);
-    }
-
-    // --- Stage 3b: highpass IIR (Chebyshev I, 200 Hz) ---
-    let mut hp_out = [0.0f32; DECIMATED_LEN];
-    arm_biquad_cascade_df2T_f32(
-        &BIQUAD_HP_INST,
-        audio.as_ptr(),
-        hp_out.as_mut_ptr(),
-        DECIMATED_LEN as u32,
-    );
-
-    // --- Stage 3c: compression ---
-    let mut compressed = [0.0f32; DECIMATED_LEN];
-    COMPRESSOR.process(&hp_out, &mut compressed);
-
-    // --- Stage 3d: lowpass IIR (Chebyshev I, 2800 Hz) ---
-    let mut lp_out = [0.0f32; DECIMATED_LEN];
-    arm_biquad_cascade_df2T_f32(
-        &BIQUAD_LP_INST,
-        compressed.as_ptr(),
-        lp_out.as_mut_ptr(),
-        DECIMATED_LEN as u32,
-    );
-
-    // --- Stage 4: SSB analytic FIR → I and Q paths ---
-    let mut ssb_i = [0.0f32; DECIMATED_LEN];
-    let mut ssb_q = [0.0f32; DECIMATED_LEN];
-    arm_fir_ssb_f32(
-        &SSB_INST,
-        lp_out.as_ptr(),
-        ssb_i.as_mut_ptr(),
-        ssb_q.as_mut_ptr(),
-        DECIMATED_LEN as u32,
-    );
-
-    // --- Stage 5a: f32 → Q31 ---
-    let mut q31_i = [0i32; DECIMATED_LEN];
-    let mut q31_q = [0i32; DECIMATED_LEN];
-    for (dst, &src) in q31_i.iter_mut().zip(ssb_i.iter()) {
-        *dst = f32_to_q31(src);
-    }
-    for (dst, &src) in q31_q.iter_mut().zip(ssb_q.iter()) {
-        *dst = f32_to_q31(src);
-    }
-
-    // --- Stage 5b: 10:1 FIR interpolation → 100 Q31 samples at 200 kHz ---
-    let mut interp_i = [0i32; FRAME_SAMPLES];
-    let mut interp_q = [0i32; FRAME_SAMPLES];
-    arm_fir_interpolate_q31(
-        &FIR_INTERP_I_INST,
-        q31_i.as_ptr(),
-        interp_i.as_mut_ptr(),
-        DECIMATED_LEN as u32,
-    );
-    arm_fir_interpolate_q31(
-        &FIR_INTERP_Q_INST,
-        q31_q.as_ptr(),
-        interp_q.as_mut_ptr(),
-        DECIMATED_LEN as u32,
-    );
-
-    // --- Stage 5c: CORDIC polar conversion + outphasing → HRTIM compare values ---
-    let mut cordic_mod   = [0i32; FRAME_SAMPLES];
-    let mut cordic_phase = [0i32; FRAME_SAMPLES];
-    cordic_modulus_vec(&interp_i, &interp_q, &mut cordic_mod, &mut cordic_phase);
-
-    for (i, slot) in hrtim_out.iter_mut().enumerate() {
-        let modulus = cordic_mod[i];
-        let phase   = cordic_phase[i];
-
-        let mag = (((modulus as i64) >> 15) * AMPLITUDE as i64) >> 16;
-        let tc_cmp1 = (mag as u32).clamp(3, AMPLITUDE);
-
-        let phase_ticks =
-            (((-(phase as i64)) >> 15) * (PWM_PERIOD as i64 / 2) >> 16)
-            + PWM_PERIOD as i64 / 2;
-        let ta_cmp1 = (phase_ticks as u32) % PWM_PERIOD;
-        let ta_cmp2 = (ta_cmp1 + PWM_PERIOD / 2) % PWM_PERIOD;
-
-        *slot = PwmSample {
-            tim_a_cmp1: ta_cmp1,
-            tim_a_cmp2: ta_cmp2,
-            tim_b_cmp1: ta_cmp1,
-            tim_b_cmp2: ta_cmp2,
-            tim_c_cmp1: tc_cmp1,
-        };
     }
 }
