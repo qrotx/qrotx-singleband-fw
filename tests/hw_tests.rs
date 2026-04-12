@@ -204,8 +204,20 @@ mod tests {
         info!("test: HRTIM Timer C counter advancing");
 
         // Timer C is index 2 in the HRTIM1 peripheral.
+        // Sample the counter 50 µs apart using DWT (safe: CYCCNT already
+        // enabled by the time this test runs after test_dsp_timing... but
+        // enable it here too in case test order changes).
+        unsafe {
+            let demcr = 0xE000_EDFC as *mut u32;
+            demcr.write_volatile(demcr.read_volatile() | (1 << 24));
+            let ctrl = 0xE000_1000 as *mut u32;
+            ctrl.write_volatile(ctrl.read_volatile() | 1);
+        }
         let cnt0 = pac::HRTIM1.tim(2).cnt().read().cnt();
-        spin(10_000); // ~60 µs at 168 MHz → ~12 Timer-C periods
+        // Wait at least one full Timer C period (850 ticks × ~6 ns ≈ 5 µs)
+        // using DWT so the delay survives release optimisation.
+        let t0 = cortex_m::peripheral::DWT::cycle_count();
+        while cortex_m::peripheral::DWT::cycle_count().wrapping_sub(t0) < 16_800 {} // 100 µs
         let cnt1 = pac::HRTIM1.tim(2).cnt().read().cnt();
 
         info!("Timer C cnt0={} cnt1={}", cnt0, cnt1);
