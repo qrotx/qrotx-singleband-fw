@@ -69,6 +69,7 @@ fn main() {
         .flag("-w")
         .define("ARM_MATH_CM4", None)
         .define("__FPU_PRESENT", "1")
+        .define("ARM_MATH_LOOPUNROLL", None)    // enable 4× loop unrolling
         .define("__GNUC_PYTHON__", None)
         .include("c_src/CMSIS-DSP/Include")
         .include("c_src/CMSIS-DSP/PrivateInclude")
