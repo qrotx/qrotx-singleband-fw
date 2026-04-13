@@ -203,7 +203,7 @@ and Si5351 dividers are recalculated at compile time — no other changes are ne
 cargo test --test hw_tests
 ```
 
-20 tests run on the target via probe-rs:
+23 tests run on the target via probe-rs:
 
 | Test | What it verifies |
 |---|---|
@@ -226,7 +226,9 @@ cargo test --test hw_tests
 | `test_ssb_analytic_signal` | SSB filter is one-sided: dominant sideband ≥ 40 dB above suppressed; includes DFT self-check |
 | `test_cordic_modulus` | CORDIC modulus correct for known I/Q pairs; output ordering preserved |
 | `test_outphasing_boundary` | Zero/full amplitude clamping; ta_cmp2 = (ta_cmp1 + PWM_PERIOD/2) % PWM_PERIOD invariant |
-| `test_conversion_helpers` | Q31/f32 round-trip accuracy |
+| `test_fir_interpolate_stopband` | 9 kHz attenuated > −26 dB by FIR interpolator (prototype achieves ~27 dB at 9 kHz) |
+| `test_process_second_half` | process_second_half() completes without HardFault; validates second-half buffer pointers |
+| `test_conversion_helpers` | Q31/f32 round-trip and adc_to_q31 boundary values |
 
 ### Audio chain simulation (Python, no hardware required)
 

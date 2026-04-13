@@ -124,6 +124,16 @@ pub unsafe fn adc_buf_second_half() -> &'static [u16] {
     &ADC_BUF[FRAME_SAMPLES..]
 }
 
+/// Borrow the second half of the ADC double-buffer (mutable, for test setup).
+pub unsafe fn adc_buf_second_half_mut() -> &'static mut [u16] {
+    &mut ADC_BUF[FRAME_SAMPLES..]
+}
+
+/// Borrow the second half of the HRTIM output double-buffer (read-only).
+pub unsafe fn hrtim_buf_second_half() -> &'static [PwmSample] {
+    &HRTIM_BUF[FRAME_SAMPLES..]
+}
+
 /// Borrow the first half of the HRTIM output double-buffer (mutable).
 pub unsafe fn hrtim_buf_first_half_mut() -> &'static mut [PwmSample] {
     &mut HRTIM_BUF[..FRAME_SAMPLES]
