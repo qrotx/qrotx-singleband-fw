@@ -203,7 +203,7 @@ and Si5351 dividers are recalculated at compile time — no other changes are ne
 cargo test --test hw_tests
 ```
 
-15 tests run on the target via probe-rs:
+20 tests run on the target via probe-rs:
 
 | Test | What it verifies |
 |---|---|
@@ -212,15 +212,20 @@ cargo test --test hw_tests
 | `test_adc_dma_fires` | DMA half-transfer ISR fires within 2 ms |
 | `test_adc_nonzero_samples` | ADC buffer contains non-zero samples |
 | `test_adc_mean_midscale` | ADC mean ≈ 2048 (voltage divider at VDDA/2) |
-| `test_dsp_timing` | `process_half()` completes within 500 µs (84 000 cycles) |
+| `test_dsp_timing` | `process_half()` completes within 500 µs (84 000 cycles), per-stage breakdown logged |
 | `test_dma_rate` | ~10 DMA full-transfer events per 10 ms (±2 tolerance) |
 | `test_fir_decimate_passband` | 1 kHz passes FIR decimator |
 | `test_fir_decimate_stopband` | 12 kHz rejected > −40 dB by FIR decimator |
+| `test_fir_interpolate_passband` | 1 kHz passes FIR interpolator (accounts for 1/L gain) |
 | `test_highpass_rejects_dc` | DC rejected by highpass biquad |
 | `test_highpass_passes_1khz` | 1 kHz passes highpass biquad |
 | `test_lowpass_passes_500hz` | 500 Hz passes lowpass biquad |
 | `test_lowpass_rejects_4khz` | 4 kHz rejected by lowpass biquad |
 | `test_compressor_reduces_loud` | Compressor reduces a loud signal |
+| `test_compressor_passes_quiet` | Quiet signal (< threshold) passes with 1.5× makeup gain |
+| `test_ssb_analytic_signal` | SSB filter is one-sided: dominant sideband ≥ 40 dB above suppressed; includes DFT self-check |
+| `test_cordic_modulus` | CORDIC modulus correct for known I/Q pairs; output ordering preserved |
+| `test_outphasing_boundary` | Zero/full amplitude clamping; ta_cmp2 = (ta_cmp1 + PWM_PERIOD/2) % PWM_PERIOD invariant |
 | `test_conversion_helpers` | Q31/f32 round-trip accuracy |
 
 ### Audio chain simulation (Python, no hardware required)
