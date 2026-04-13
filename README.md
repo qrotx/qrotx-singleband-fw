@@ -230,6 +230,42 @@ cargo test --test hw_tests
 | `test_process_second_half` | process_second_half() completes without HardFault; validates second-half buffer pointers |
 | `test_conversion_helpers` | Q31/f32 round-trip and adc_to_q31 boundary values |
 
+### Oscilloscope tests (Rigol DS1054Z connected to host)
+
+```
+python tests/scope_tests.py [--step]
+```
+
+Requires `pip install pyvisa pyvisa-py` and a USB connection from the Rigol DS1054Z
+to the host PC.  On Windows install the USBTMC driver via Zadig.
+
+Pass `--step` to pause before each measurement so you can inspect the scope
+screen and press Enter to continue.
+
+Connect probes before running:
+
+| Channel | Pin  | Signal |
+|---|---|---|
+| CH1 | PA8  | Timer A output 1 — phase-modulated RF, positive |
+| CH2 | PA9  | Timer A output 2 — dead-time complement of PA8 |
+| CH3 | PB12 | Timer C output 1 — buck converter / amplitude envelope |
+| CH4 | PB13 | Timer C output 2 — dead-time complement of PB12 |
+| GND | GND  | Any board GND pin |
+
+The script builds `src/bin/scope_test.rs`, flashes it onto the Nucleo, and
+coordinates scope measurements at each of five firmware test states:
+
+| State | Settings | Scope measurement |
+|---|---|---|
+| 1 | Nominal (ta_cmp1=PWM_PERIOD/2, full amplitude) | Frequency on all 4 channels |
+| 2 | Low amplitude (tc_cmp1=AMPLITUDE/4) | Timer C (CH3) duty cycle |
+| 3 | Full amplitude (tc_cmp1=AMPLITUDE) | Timer C (CH3) duty cycle |
+| 4 | Phase reference (ta_cmp1=0) | CH1/CH2 complementary; record CH1 duty |
+| 5 | Phase step (ta_cmp1=PWM_PERIOD/4) | CH1 duty shifts +25 % vs State 4 |
+
+The scope is fully configured by the script (channels, timebase, trigger) —
+no manual scope setup is required.
+
 ### Audio chain simulation (Python, no hardware required)
 
 Open [`tools/test_audio_chain.ipynb`](tools/test_audio_chain.ipynb) in
