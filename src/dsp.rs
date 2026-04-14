@@ -14,7 +14,9 @@
 //   arm_biquad HP         10 × f32  →   10 × f32 (Chebyshev I HP, 200 Hz) [CMSIS-DSP]
 //   compress()            10 × f32  →   10 × f32 (envelope follower, 4:1 ratio)
 //   arm_biquad LP         10 × f32  →   10 × f32 (Chebyshev I LP, 2800 Hz) [CMSIS-DSP]
-//   arm_fir_ssb_f32()     10 × f32  →  (10 × f32 I, 10 × f32 Q) analytic signal [C]
+//   modulation stage 4:
+//     LSB/USB: arm_fir_ssb_f32() 10 × f32  →  (10 × f32 I, 10 × f32 Q)  analytic [C]
+//     AM:      carrier + audio   10 × f32  →  I = carrier + audio×scale, Q = 0
 //   f32_to_q31()         (10 × I, 10 × Q) f32  →  (10 × I, 10 × Q) Q31
 //   arm_fir_interpolate  (10 × Q31 I, 10 × Q31 Q)  →  (100 × Q31 I, 100 × Q31 Q) [CMSIS-DSP]
 //   cordic + outphasing  (100 × I, 100 × Q) Q31  →  100 × PwmSample
@@ -22,7 +24,7 @@
 
 use embassy_stm32::pac;
 
-use crate::config::{FRAME_SAMPLES, PWM_PERIOD, TIMERC_PERIOD};
+use crate::config::{AM_CARRIER_LEVEL, FRAME_SAMPLES, MODULATION, ModulationMode, PWM_PERIOD, TIMERC_PERIOD};
 use crate::dsp_ffi::{
     ArmBiquadCascadeDf2TInstanceF32, ArmFirDecimateInstanceQ31,
     ArmFirInstanceF32, ArmFirInterpolateInstanceQ31,
@@ -441,7 +443,7 @@ pub struct PipelineTimings {
     pub stage3b_highpass:    u32,  // Chebyshev I HP biquad (CMSIS-DSP f32)
     pub stage3c_compress:    u32,  // Envelope-follower compressor (Rust)
     pub stage3d_lowpass:     u32,  // Chebyshev I LP biquad (CMSIS-DSP f32)
-    pub stage4_ssb:          u32,  // 257-tap analytic FIR I+Q (C arm_fir_ssb_f32)
+    pub stage4_modulate:     u32,  // modulation stage: SSB analytic FIR or AM bypass
     pub stage5a_f32_to_q31:  u32,  // f32 → Q31 conversion (I and Q, 10 samples each)
     pub stage5b_interpolate:  u32,  // 10:1 FIR interpolation I+Q (CMSIS-DSP Q31)
     pub stage5c_cordic:       u32,  // CORDIC MODULUS vector (zero-overhead, 100 samples)
@@ -581,16 +583,44 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineT
     );
     let t3d = cyccnt();
 
-    // --- Stage 4: SSB analytic FIR → I and Q paths ---
+    // --- Stage 4: modulation → I and Q paths ---
     let mut ssb_i = [0.0f32; DECIMATED_LEN];
     let mut ssb_q = [0.0f32; DECIMATED_LEN];
-    arm_fir_ssb_f32(
-        &SSB_INST,
-        lp_out.as_ptr(),
-        ssb_i.as_mut_ptr(),
-        ssb_q.as_mut_ptr(),
-        DECIMATED_LEN as u32,
-    );
+    match MODULATION {
+        ModulationMode::Lsb => {
+            // Analytic FIR as-is: energy at −f for input at +f → lower sideband.
+            arm_fir_ssb_f32(
+                &SSB_INST,
+                lp_out.as_ptr(),
+                ssb_i.as_mut_ptr(),
+                ssb_q.as_mut_ptr(),
+                DECIMATED_LEN as u32,
+            );
+        }
+        ModulationMode::Usb => {
+            // Conjugate the analytic signal (negate Q) → upper sideband.
+            arm_fir_ssb_f32(
+                &SSB_INST,
+                lp_out.as_ptr(),
+                ssb_i.as_mut_ptr(),
+                ssb_q.as_mut_ptr(),
+                DECIMATED_LEN as u32,
+            );
+            for q in ssb_q.iter_mut() {
+                *q = -*q;
+            }
+        }
+        ModulationMode::Am => {
+            // Bypass SSB filter.  Add DC carrier; scale audio so that
+            // carrier + peak_audio = 1.0 (no clipping).
+            // CORDIC modulus of (ssb_i, 0) = |ssb_i|, which tracks the AM envelope.
+            let audio_scale = 1.0 - AM_CARRIER_LEVEL;
+            for (i, &s) in ssb_i.iter_mut().zip(lp_out.iter()) {
+                *i = AM_CARRIER_LEVEL + s * audio_scale;
+            }
+            // ssb_q remains zero (zero-initialised above).
+        }
+    }
     let t4 = cyccnt();
 
     // --- Stage 5a: f32 → Q31 ---
@@ -639,7 +669,7 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineT
         stage3b_highpass:    t3b.wrapping_sub(t3a),
         stage3c_compress:    t3c.wrapping_sub(t3b),
         stage3d_lowpass:     t3d.wrapping_sub(t3c),
-        stage4_ssb:          t4.wrapping_sub(t3d),
+        stage4_modulate:     t4.wrapping_sub(t3d),
         stage5a_f32_to_q31:  t5a.wrapping_sub(t4),
         stage5b_interpolate: t5b.wrapping_sub(t5a),
         stage5c_cordic:      t5c.wrapping_sub(t5b),

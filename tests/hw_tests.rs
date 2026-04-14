@@ -335,7 +335,7 @@ mod tests {
         info!("  Stage 3b highpass        {} cy  ({} µs)", t.stage3b_highpass,     t.stage3b_highpass     / 168);
         info!("  Stage 3c compress        {} cy  ({} µs)", t.stage3c_compress,     t.stage3c_compress     / 168);
         info!("  Stage 3d lowpass         {} cy  ({} µs)", t.stage3d_lowpass,      t.stage3d_lowpass      / 168);
-        info!("  Stage 4  ssb_fir         {} cy  ({} µs)", t.stage4_ssb,           t.stage4_ssb           / 168);
+        info!("  Stage 4  modulate        {} cy  ({} µs)", t.stage4_modulate,      t.stage4_modulate      / 168);
         info!("  Stage 5a f32_to_q31      {} cy  ({} µs)", t.stage5a_f32_to_q31,  t.stage5a_f32_to_q31  / 168);
         info!("  Stage 5b interpolate     {} cy  ({} µs)", t.stage5b_interpolate,  t.stage5b_interpolate  / 168);
         info!("  Stage 5c cordic          {} cy  ({} µs)", t.stage5c_cordic,      t.stage5c_cordic      / 168);

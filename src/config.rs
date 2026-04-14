@@ -94,6 +94,32 @@ pub const FRAME_SAMPLES: usize = (AUDIO_RATE_HZ / (1_000_000 / FRAME_US)) as usi
 pub const TIMERC_PERIOD: u32 = 850;
 
 // ---------------------------------------------------------------------------
+// Modulation mode
+// ---------------------------------------------------------------------------
+
+/// Selects the modulation scheme for the transmitter.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ModulationMode {
+    /// Lower sideband SSB: analytic signal from arm_fir_ssb_f32 used as-is.
+    Lsb,
+    /// Upper sideband SSB: Q path negated to conjugate the analytic signal.
+    Usb,
+    /// Amplitude modulation: SSB filter bypassed; carrier added to audio.
+    Am,
+}
+
+/// Active modulation mode.  Change this constant to switch modes.
+pub const MODULATION: ModulationMode = ModulationMode::Lsb;
+
+/// AM carrier level relative to full scale (0.0 = suppressed-carrier DSB,
+/// 1.0 = carrier only, no modulation).  Only meaningful when MODULATION = Am.
+///
+/// Audio is scaled by `(1.0 − AM_CARRIER_LEVEL)` so that
+/// carrier + peak audio = 1.0, preventing clipping.
+pub const AM_CARRIER_LEVEL: f32 = 0.5;
+
+// ---------------------------------------------------------------------------
 // Sanity-check assertions (evaluated at compile time)
 // ---------------------------------------------------------------------------
 const _: () = {
