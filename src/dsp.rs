@@ -436,6 +436,7 @@ pub unsafe fn cordic_modulus_vec(
 /// All fields are DWT CYCCNT deltas.  Enable DWT (TRCENA + CYCCNTENA) to get
 /// real numbers; if DWT is off all fields are zero.  The DSP task drops the
 /// return value so the compiler eliminates the dead arithmetic at -Ofast.
+#[allow(dead_code)]
 pub struct PipelineTimings {
     pub stage1_adc_to_q31:   u32,  // u16 → Q31 conversion (100 samples)
     pub stage2_fir_decimate:  u32,  // 10:1 FIR decimation (CMSIS-DSP Q31)
