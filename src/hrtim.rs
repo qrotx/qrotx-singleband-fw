@@ -5,22 +5,22 @@
 //
 // Hardware topology:
 //
-//   Master timer  period = PWM_PERIOD  prescaler = MUL32 (CKPSC=5)  continuous
+//   Master timer  period = PWM_PERIOD  prescaler = MUL32 (CKPSC=0)  continuous
 //                 CMP1   = PWM_PERIOD/2  → resets Timer B at 180°
 //
-//   Timer A       period = PWM_PERIOD  prescaler = MUL32  continuous
+//   Timer A       period = PWM_PERIOD  prescaler = MUL32 (CKPSC=0)  continuous
 //                 Reset by: Master period (→ 0° phase)
 //                 CMP1/CMP2 updated by DMA burst (phase control for class-D bridge)
 //                 Dead-time: negative sign (overlap), MUL8 prescaler, 3 ticks R+F
 //                 TA1 (PA8): Set on CMP1 | TimerB-CMP2;  Reset on CMP2 | TimerB-CMP1
 //                 TA2 (PA9): Set/Reset = NONE → driven entirely by dead-time unit
 //
-//   Timer B       period = PWM_PERIOD  prescaler = MUL32  continuous
+//   Timer B       period = PWM_PERIOD  prescaler = MUL32 (CKPSC=0)  continuous
 //                 Reset by: Master CMP1 (→ 180° phase, offset from Timer A)
 //                 CMP1/CMP2 updated by DMA burst
 //                 No outputs.  Provides cross-coupling trigger events to Timer A.
 //
-//   Timer C       period = TIMERC_PERIOD (850)  prescaler = DIV1 (CKPSC=0) → ~200 kHz
+//   Timer C       period = TIMERC_PERIOD (850)  prescaler = DIV1 (CKPSC=5) → ~200 kHz
 //                 Runs freely (no reset from master)
 //                 CMP1 updated by DMA burst → controls buck converter duty cycle
 //                 Dead-time: positive sign, MUL8 prescaler, 10 ticks R+F
@@ -269,11 +269,16 @@ pub fn init() {
     hrtim.bdtupr(2).write(|w|   w.set_cmp(0, true));                         // Timer C: CMP1 only
 
     // ------------------------------------------------------------------
-    // 6. Master timer: MUL32 (CKPSC=5), continuous, period = PWM_PERIOD.
+    // 6. Master timer: MUL32 (CKPSC=0), continuous, period = PWM_PERIOD.
     //    CMP1 = PWM_PERIOD/2 → resets Timer B at 180°.
+    //
+    //    CKPSC encoding (STM32G4 HAL / RM0440):
+    //      0 = MUL32  → fCOUNT = fHRTIM × 32 (high-resolution, ≈ 5.376 GHz at 168 MHz)
+    //      5 = DIV1   → fCOUNT = fHRTIM       (same as SYSCLK, no high-res multiplication)
+    //    The period/compare registers hold values in fCOUNT ticks.
     // ------------------------------------------------------------------
     hrtim.mcr().write(|w| {
-        w.set_ckpsc(5);   // MUL32 (32× high-res, fCOUNT = 32 × fHRCLK ≈ 5.4 GHz)
+        w.set_ckpsc(0);   // MUL32: fCOUNT = fHRTIM × 32 ≈ 5.376 GHz at 168 MHz
         w.set_cont(true); // continuous counting
     });
     hrtim.mper().write(|w| w.set_mper(PWM_PERIOD as u16));
@@ -287,7 +292,7 @@ pub fn init() {
     //      timevnt[1] = Timer A Event 2 = Timer B CMP2
     // ------------------------------------------------------------------
     hrtim.tim(0).cr().write(|w| {
-        w.set_ckpsc(5);
+        w.set_ckpsc(0);   // MUL32: fCOUNT = fHRTIM × 32
         w.set_cont(true);
     });
     hrtim.tim(0).per().write(|w| w.set_per(PWM_PERIOD as u16));
@@ -331,7 +336,7 @@ pub fn init() {
     //    No outputs.
     // ------------------------------------------------------------------
     hrtim.tim(1).cr().write(|w| {
-        w.set_ckpsc(5);
+        w.set_ckpsc(0);   // MUL32: fCOUNT = fHRTIM × 32
         w.set_cont(true);
     });
     hrtim.tim(1).per().write(|w| w.set_per(PWM_PERIOD as u16));
@@ -343,13 +348,13 @@ pub fn init() {
 
     // ------------------------------------------------------------------
     // 9. Timer C (index 2): independent 200 kHz buck-converter PWM.
-    //    DIV1 (CKPSC=0) → fCOUNT = fHRCLK ≈ 169.5 MHz, period = 850 ticks.
+    //    DIV1 (CKPSC=5) → fCOUNT = fHRTIM ≈ 168 MHz, period = 850 ticks.
     //    Preload enabled; CMP1 register is double-buffered and updated on REP.
     //    REP counter = 0 → REP event every period.
     //    DIER.REPDE = 1 → DMA request on REP.
     // ------------------------------------------------------------------
     hrtim.tim(2).cr().write(|w| {
-        w.set_ckpsc(0);    // DIV1: fCOUNT = fHRCLK (no ×32 multiplier)
+        w.set_ckpsc(5);    // DIV1: fCOUNT = fHRTIM (SYSCLK, no high-res multiplication)
         w.set_cont(true);
         w.set_preen(true); // preload enable
         w.set_repu(true);  // update preloaded registers on repetition event
