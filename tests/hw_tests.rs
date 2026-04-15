@@ -25,6 +25,7 @@
 //   test_compressor_passes_quiet — quiet signal gets makeup gain of 1.5×
 //   test_fir_interpolate_stopband — 9 kHz rejected > −40 dB by interpolator
 //   test_process_second_half — smoke test for second-half buffer pointers
+//   test_hrtim_dma_updates_regs — DMA1_CH5 burst writes reach the 5 HRTIM CMP registers
 
 #![no_std]
 #![no_main]
@@ -1045,7 +1046,94 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 22: Sample format conversion helpers
+    // Test 22: HRTIM burst DMA updates all five CMP registers
+    //
+    // DMA1_CH5 is configured as a circular burst DMA triggered by Timer C's
+    // REP event (every ~5 µs at 200 kHz).  Each burst writes one PwmSample
+    // (5 × u32) to HRTIM1.BDMADR, which the HRTIM routes to:
+    //   word 0 → Timer A CMP1
+    //   word 1 → Timer A CMP2
+    //   word 2 → Timer B CMP1
+    //   word 3 → Timer B CMP2
+    //   word 4 → Timer C CMP1
+    //
+    // This test writes a sentinel PwmSample into HRTIM_BUF, waits for
+    // several burst periods, then reads back the five CMP registers from
+    // the HRTIM1 peripheral and asserts they match.
+    //
+    // Timer C CMP1 has preload enabled (preen + repu in hrtim::init()).
+    // BDMADR writes land in the preload register, so the readback of
+    // tim(2).cmp(0) still reflects the DMA-written value.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_hrtim_dma_updates_regs(_state: &mut State) {
+        use config::{PWM_PERIOD, TIMERC_PERIOD};
+        use hrtim::PwmSample;
+
+        info!("test: HRTIM burst DMA updates CMP registers");
+
+        // Sentinel values — chosen to be valid PWM values and clearly
+        // different from the initial values set in hrtim::init():
+        //   init: Timer A CMP1 = PWM_PERIOD/4, CMP2 = PWM_PERIOD*3/4
+        //         Timer B CMP1 = PWM_PERIOD/4, CMP2 = PWM_PERIOD*3/4
+        //         Timer C CMP1 = 1 (near-zero duty)
+        let sentinel_ta_cmp1 = PWM_PERIOD / 3;
+        let sentinel_ta_cmp2 = (sentinel_ta_cmp1 + PWM_PERIOD / 2) % PWM_PERIOD;
+        let sentinel_tc_cmp1 = TIMERC_PERIOD / 3;
+        let sentinel = PwmSample {
+            tim_a_cmp1: sentinel_ta_cmp1,
+            tim_a_cmp2: sentinel_ta_cmp2,
+            tim_b_cmp1: sentinel_ta_cmp1,
+            tim_b_cmp2: sentinel_ta_cmp2,
+            tim_c_cmp1: sentinel_tc_cmp1,
+        };
+
+        // Overwrite both halves of the DMA buffer with the sentinel sample.
+        // Safety: no DSP task is running in hw_tests.
+        unsafe {
+            for slot in hrtim::hrtim_buf_first_half_mut()  { *slot = sentinel; }
+            for slot in hrtim::hrtim_buf_second_half_mut() { *slot = sentinel; }
+        }
+
+        // Wait several Timer C periods so the DMA has time to burst the new
+        // values into the HRTIM registers.  Timer C period ≈ 5 µs; 1 ms
+        // gives ~200 bursts of headroom.
+        wait_ms(1);
+
+        // Read back the five CMP registers directly from the HRTIM peripheral.
+        let ta_cmp1 = pac::HRTIM1.tim(0).cmp(0).read().cmp() as u32;
+        let ta_cmp2 = pac::HRTIM1.tim(0).cmp(1).read().cmp() as u32;
+        let tb_cmp1 = pac::HRTIM1.tim(1).cmp(0).read().cmp() as u32;
+        let tb_cmp2 = pac::HRTIM1.tim(1).cmp(1).read().cmp() as u32;
+        let tc_cmp1 = pac::HRTIM1.tim(2).cmp(0).read().cmp() as u32;
+
+        info!(
+            "HRTIM regs: TA_CMP1={} TA_CMP2={} TB_CMP1={} TB_CMP2={} TC_CMP1={}",
+            ta_cmp1, ta_cmp2, tb_cmp1, tb_cmp2, tc_cmp1
+        );
+        info!(
+            "Expected:   TA_CMP1={} TA_CMP2={} TB_CMP1={} TB_CMP2={} TC_CMP1={}",
+            sentinel_ta_cmp1, sentinel_ta_cmp2,
+            sentinel_ta_cmp1, sentinel_ta_cmp2,
+            sentinel_tc_cmp1
+        );
+
+        defmt::assert!(ta_cmp1 == sentinel_ta_cmp1,
+            "Timer A CMP1: got {} expected {}", ta_cmp1, sentinel_ta_cmp1);
+        defmt::assert!(ta_cmp2 == sentinel_ta_cmp2,
+            "Timer A CMP2: got {} expected {}", ta_cmp2, sentinel_ta_cmp2);
+        defmt::assert!(tb_cmp1 == sentinel_ta_cmp1,
+            "Timer B CMP1: got {} expected {}", tb_cmp1, sentinel_ta_cmp1);
+        defmt::assert!(tb_cmp2 == sentinel_ta_cmp2,
+            "Timer B CMP2: got {} expected {}", tb_cmp2, sentinel_ta_cmp2);
+        defmt::assert!(tc_cmp1 == sentinel_tc_cmp1,
+            "Timer C CMP1: got {} expected {}", tc_cmp1, sentinel_tc_cmp1);
+
+        info!("test_hrtim_dma_updates_regs: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 23: Sample format conversion helpers
     // -----------------------------------------------------------------------
     #[test]
     fn test_conversion_helpers(_state: &mut State) {
