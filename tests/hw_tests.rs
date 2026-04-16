@@ -369,13 +369,13 @@ mod tests {
         // singleton API which may already be consumed by the runtime).
         // DEMCR[24] = TRCENA enables the DWT/ITM trace macrocell.
         // DWT_CTRL[0] = CYCCNTENA enables the cycle counter.
-        unsafe {
-            let demcr = 0xE000_EDFC as *mut u32;
-            demcr.write_volatile(demcr.read_volatile() | (1 << 24)); // TRCENA
-            (0xE000_1004 as *mut u32).write_volatile(0);             // reset CYCCNT
-            let ctrl = 0xE000_1000 as *mut u32;
-            ctrl.write_volatile(ctrl.read_volatile() | 1);           // CYCCNTENA
-        }
+//      unsafe {
+//            let demcr = 0xE000_EDFC as *mut u32;
+//            demcr.write_volatile(demcr.read_volatile() | (1 << 24)); // TRCENA
+//            (0xE000_1004 as *mut u32).write_volatile(0);             // reset CYCCNT
+//            let ctrl = 0xE000_1000 as *mut u32;
+//            ctrl.write_volatile(ctrl.read_volatile() | 1);           // CYCCNTENA
+//        }
 
         PROCESS_SECOND_HALF.store(false, Ordering::Relaxed);
         let mut count = 0u32;

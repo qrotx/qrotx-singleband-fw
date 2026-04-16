@@ -106,7 +106,7 @@ pub fn init() {
     adc1.cfgr().write(|w| {
         w.set_res(Res::BITS12);
         w.set_align(false);         // right-aligned
-        w.set_extsel(24);           // HRTIM1_ADCTRG1
+        w.set_extsel(21);           // HRTIM1_ADCTRG1
         w.set_exten(Exten::RISING_EDGE);
         w.set_dmaen(Dmaen::ENABLE);
         w.set_dmacfg(Dmacfg::CIRCULAR);
