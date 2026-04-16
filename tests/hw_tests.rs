@@ -18,6 +18,7 @@
 //   test_adc_mean_midscale   — ADC mean ≈ 2048 (voltage divider at VDDA/2)
 //   test_dsp_timing          — process_half() fits within 500 µs budget
 //   test_dma_rate            — ~10 full-transfer events in 10 ms
+//   test_hrtim_dma_running   — DMA1_CH5 TCIF set after 15 ms (HRTIM DMA active)
 //   test_fir_interpolate_passband — 1 kHz passes through 10:1 interpolator
 //   test_ssb_analytic_signal — SSB filter suppresses negative frequency ≥ 40 dB
 //   test_cordic_modulus      — spot-checks CORDIC modulus and output ordering
@@ -401,7 +402,45 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 8: FIR decimator passband — 1 kHz passes through
+    // Test 8: HRTIM DMA (DMA1_CH5) transfer-complete flag fires
+    //
+    // DMA1_CH5 transfers HRTIM_BUF (1000 words = 200 PwmSamples × 5) to
+    // HRTIM1.BDMADR triggered by Timer C REP at ~200 kHz.  Each trigger
+    // bursts 5 words (one PwmSample), so one full TC fires every 200
+    // triggers = ~1 ms.  No ISR clears CH5 flags, so TCIF accumulates
+    // in the DMA1 ISR register and can be polled directly.
+    //
+    // Procedure:
+    //   1. Clear all CH5 flags via IFCR (GIF write clears TCIF/HTIF/TEIF).
+    //   2. Wait 5 ms (≥ 4 full buffer cycles at ~1 ms each).
+    //   3. Assert TCIF(4) is set and TEIF(4) is clear.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_hrtim_dma_running(_state: &mut State) {
+        info!("test: HRTIM DMA1_CH5 transfer-complete flag");
+
+        // 1. Clear all DMA1 CH5 flags (GIF clears TCIF, HTIF, TEIF simultaneously).
+        pac::DMA1.ifcr().write(|w| w.set_gif(4, true));
+
+        // 2. Wait 5 ms — at least 4 full buffer cycles (1 TC per ~1 ms).
+        wait_ms(5);
+
+        // 3. Read the ISR.
+        let isr = pac::DMA1.isr().read();
+        let tc   = isr.tcif(4);
+        let te   = isr.teif(4);
+        let ndtr = pac::DMA1.ch(4).ndtr().read().ndt();
+
+        info!("DMA1 CH5: TCIF={} TEIF={} NDTR={}", tc, te, ndtr);
+
+        defmt::assert!(!te, "DMA1_CH5 transfer error — check HRTIM_BUF alignment and NDTR");
+        defmt::assert!(tc,  "DMA1_CH5 TCIF not set after 15 ms — HRTIM DMA not running");
+
+        info!("test_hrtim_dma_running: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 9: FIR decimator passband — 1 kHz passes through
     // -----------------------------------------------------------------------
     #[test]
     fn test_fir_decimate_passband(_state: &mut State) {
@@ -445,7 +484,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 9: FIR decimator stopband — 12 kHz rejected (> −40 dB)
+    // Test 10: FIR decimator stopband — 12 kHz rejected (> −40 dB)
     // -----------------------------------------------------------------------
     #[test]
     fn test_fir_decimate_stopband(_state: &mut State) {
@@ -488,7 +527,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 10: FIR interpolator passband — 1 kHz passes through
+    // Test 11: FIR interpolator passband — 1 kHz passes through
     //
     // Symmetric counterpart to tests 8/9.  The interpolator takes
     // DECIMATED_LEN samples at 20 kHz and produces FRAME_SAMPLES at 200 kHz.
@@ -542,7 +581,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 11: Highpass biquad rejects DC
+    // Test 12: Highpass biquad rejects DC
     // -----------------------------------------------------------------------
     #[test]
     fn test_highpass_rejects_dc(_state: &mut State) {
@@ -570,7 +609,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 12: Highpass biquad passes 1 kHz
+    // Test 13: Highpass biquad passes 1 kHz
     // -----------------------------------------------------------------------
     #[test]
     fn test_highpass_passes_1khz(_state: &mut State) {
@@ -599,7 +638,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 13: Lowpass biquad passes 500 Hz
+    // Test 14: Lowpass biquad passes 500 Hz
     // -----------------------------------------------------------------------
     #[test]
     fn test_lowpass_passes_500hz(_state: &mut State) {
@@ -628,7 +667,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 14: Lowpass biquad rejects 4 kHz
+    // Test 15: Lowpass biquad rejects 4 kHz
     // -----------------------------------------------------------------------
     #[test]
     fn test_lowpass_rejects_4khz(_state: &mut State) {
@@ -657,7 +696,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 15: Compressor reduces a loud signal
+    // Test 16: Compressor reduces a loud signal
     // -----------------------------------------------------------------------
     #[test]
     fn test_compressor_reduces_loud(_state: &mut State) {
@@ -673,7 +712,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 16: SSB filter produces a true analytic signal
+    // Test 17: SSB filter produces a true analytic signal
     //
     // Feed a 1 kHz sine into arm_fir_ssb_f32.  The complex output
     // z[n] = I[n] + j·Q[n] must be one-sided in frequency: all energy at
@@ -818,7 +857,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 17: CORDIC modulus — known I/Q pairs and output ordering
+    // Test 18: CORDIC modulus — known I/Q pairs and output ordering
     //
     // Spot-checks cordic_modulus_vec against analytically known results and
     // verifies that outputs are returned in the same order as inputs (the
@@ -879,7 +918,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 18: Outphasing boundary conditions
+    // Test 19: Outphasing boundary conditions
     //
     // Verifies outphasing_sample() at the edges of its input range:
     //
@@ -935,7 +974,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 19: Compressor passes quiet signal with makeup gain
+    // Test 20: Compressor passes quiet signal with makeup gain
     //
     // A signal well below threshold (0.05 < 0.3) must not be compressed.
     // The compressor applies makeup gain of 1.5×, so output RMS ≈ input × 1.5.
@@ -962,7 +1001,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 20: FIR interpolator stopband — 9 kHz rejected
+    // Test 21: FIR interpolator stopband — 9 kHz rejected
     //
     // 9 kHz is below the 20 kHz Nyquist (no aliasing) and 1.8× above the
     // 5 kHz prototype cutoff.  The design notebook shows ~27 dB attenuation
@@ -1015,7 +1054,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 21: process_second_half() smoke test
+    // Test 22: process_second_half() smoke test
     //
     // Calls process_second_half() and verifies it completes without faulting.
     // This exercises the second-half buffer pointers which are never used by
@@ -1046,7 +1085,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 22: HRTIM burst DMA updates all five CMP registers
+    // Test 23: HRTIM burst DMA updates all five CMP registers
     //
     // DMA1_CH5 is configured as a circular burst DMA triggered by Timer C's
     // REP event (every ~5 µs at 200 kHz).  Each burst writes one PwmSample
@@ -1133,7 +1172,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 23: Sample format conversion helpers
+    // Test 24: Sample format conversion helpers
     // -----------------------------------------------------------------------
     #[test]
     fn test_conversion_helpers(_state: &mut State) {
