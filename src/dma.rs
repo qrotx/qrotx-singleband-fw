@@ -38,10 +38,10 @@ pub fn init() {
     // ------------------------------------------------------------------
     // DMAMUX1 routing.
     //   Channel 0 → DMA1_CH1: ADC1 request (ID 5).
-    //   Channel 4 → DMA1_CH5: HRTIM1 Timer C request (ID 96).
+    //   Channel 4 → DMA1_CH5: HRTIM1 Timer C request (ID 98).
     // ------------------------------------------------------------------
     dmamux.ccr(0).write(|w| w.set_dmareq_id(5));
-    dmamux.ccr(4).write(|w| w.set_dmareq_id(96));
+    dmamux.ccr(4).write(|w| w.set_dmareq_id(98));
 
     // ------------------------------------------------------------------
     // DMA1_CH1 — ADC1_DR → ADC_BUF
