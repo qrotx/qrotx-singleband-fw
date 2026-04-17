@@ -84,16 +84,14 @@ unsafe fn fill_hrtim_buf(s: PwmSample) {
     for slot in hrtim::hrtim_buf_second_half_mut() { *slot = s; }
 }
 
-/// Build a PwmSample from ta_cmp1 and tc_cmp1; derive ta_cmp2 = ta_cmp1 + half.
-fn make_sample(ta_cmp1: u32, tc_cmp1: u32) -> PwmSample {
-    let t = ta_cmp1 + PWM_PERIOD / 2;
-    let ta_cmp2 = if t >= PWM_PERIOD { t - PWM_PERIOD } else { t };
+/// Build a PwmSample from td_cmp1 and tc_cmp1; derive te_cmp1 = td_cmp1 + PWM_PERIOD/2.
+fn make_sample(td_cmp1: u32, tc_cmp1: u32) -> PwmSample {
+    let t = td_cmp1 + PWM_PERIOD / 2;
+    let te_cmp1 = if t >= PWM_PERIOD { t - PWM_PERIOD } else { t };
     PwmSample {
-        tim_a_cmp1: ta_cmp1,
-        tim_a_cmp2: ta_cmp2,
-        tim_b_cmp1: ta_cmp1,
-        tim_b_cmp2: ta_cmp2,
         tim_c_cmp1: tc_cmp1,
+        tim_d_cmp1: td_cmp1,
+        tim_e_cmp1: te_cmp1,
     }
 }
 

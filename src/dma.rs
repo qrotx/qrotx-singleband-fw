@@ -24,8 +24,8 @@ use crate::hrtim::{adc_buf_ptr, hrtim_buf_ptr, PROCESS_FIRST_HALF, PROCESS_SECON
 /// Total number of halfwords in the ADC double-buffer.
 const ADC_DMA_LEN: u16 = (FRAME_SAMPLES * 2) as u16; // 200
 
-/// Total number of words in the HRTIM double-buffer (200 PwmSamples × 5 words).
-const HRTIM_DMA_LEN: u16 = (FRAME_SAMPLES * 2 * 5) as u16; // 1000
+/// Total number of words in the HRTIM double-buffer (200 PwmSamples × 3 words).
+const HRTIM_DMA_LEN: u16 = (FRAME_SAMPLES * 2 * 3) as u16; // 600
 
 /// Configure and enable DMA1_CH1 (ADC) and DMA1_CH5 (HRTIM burst DMA).
 ///
