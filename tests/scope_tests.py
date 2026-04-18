@@ -111,8 +111,8 @@ class Scope:
             self.inst.write(f":CHANnel{ch}:DISPlay ON")
             self.inst.write(f":CHANnel{ch}:COUPling DC")
             self.inst.write(f":CHANnel{ch}:PROBe 1")
-            self.inst.write(f":CHANnel{ch}:SCALe 1")        # 1 V/div
-            self.inst.write(f":CHANnel{ch}:OFFSet -1.65")   # centre 3.3 V swing
+            self.inst.write(f":CHANnel{ch}:SCALe 5")        # 1 V/div
+            self.inst.write(f":CHANnel{ch}:OFFSet {ch * 5 - 15}")   # arrange channels
             self.inst.write(f":CHANnel{ch}:BWLimit OFF")     # full bandwidth
             self.inst.write(f":CHANnel{ch}:INVert OFF")
 
@@ -121,6 +121,8 @@ class Scope:
         self.inst.write(":TRIGger:MODE EDGE")
         self.inst.write(":TRIGger:EDGe:SLOPe POSitive")
         self.inst.write(":TRIGger:SWEep NORMal")
+        self.inst.query("*OPC?")
+        time.sleep(5)
 
         print("Scope prepared: channels configured, awaiting timebase")
 
@@ -144,6 +146,7 @@ class Scope:
         self.inst.write(":TRIGger:EDGe:LEVel 1.65")
         self.inst.write(":RUN")
         self.inst.query("*OPC?")
+        time.sleep(5)
         print(f"  Scope timebase → {freq_hz/1e3:.2f} kHz, "
               f"{time_per_div*1e6:.3f} µs/div, trigger CH{trigger_ch}")
 
