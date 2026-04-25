@@ -398,7 +398,9 @@ def test_state2_tc_low_duty(scope: Scope, fw: FirmwareRunner,
         return
     check("State 2 reached", True)
     scope.set_timebase(timerc_hz, trigger_ch=3)
-    time.sleep(1.0)
+    if not scope.wait_triggered(timeout_s=5.0):
+        print("  WARNING: scope did not trigger on CH3 within 5 s")
+    time.sleep(0.5)
     _step_pause(step, "CH3 Timer C low duty")
 
     tc_cmp1 = params.get("tc_cmp1", 0)
@@ -424,7 +426,9 @@ def test_state3_tc_full_duty(scope: Scope, fw: FirmwareRunner,
         return
     check("State 3 reached", True)
     scope.set_timebase(timerc_hz, trigger_ch=3)
-    time.sleep(1.0)
+    if not scope.wait_triggered(timeout_s=5.0):
+        print("  WARNING: scope did not trigger on CH3 within 5 s")
+    time.sleep(0.5)
     _step_pause(step, "CH3 Timer C full duty")
 
     tc_cmp1 = params.get("tc_cmp1", 0)
@@ -462,7 +466,9 @@ def test_state4_phase_reference(scope: Scope, fw: FirmwareRunner,
         return None
     check("State 4 reached", True)
     scope.set_timebase(timer_a_hz, trigger_ch=1)
-    time.sleep(1.0)
+    if not scope.wait_triggered(timeout_s=5.0):
+        print("  WARNING: scope did not trigger on CH1 within 5 s")
+    time.sleep(0.5)
     _step_pause(step, "CH1/CH2 phase reference ta_cmp1=0")
 
     phase_12 = scope.phase(1, 2)
@@ -491,7 +497,9 @@ def test_state5_phase_step(scope: Scope, fw: FirmwareRunner,
         return
     check("State 5 reached", True)
     scope.set_timebase(timer_a_hz, trigger_ch=1)
-    time.sleep(1.0)
+    if not scope.wait_triggered(timeout_s=5.0):
+        print("  WARNING: scope did not trigger on CH1 within 5 s")
+    time.sleep(0.5)
     _step_pause(step, "CH1/CH2 phase step ta_cmp1=PWM_PERIOD/4")
 
     phase_12 = scope.phase(1, 2)
