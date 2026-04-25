@@ -163,8 +163,12 @@ class Scope:
             return None
 
     def frequency(self, channel: int) -> float | None:
-        """Frequency in Hz."""
-        return self._query_float(f":MEASure:ITEM? FREQuency,CHANnel{channel}")
+        """Frequency in Hz, measured by the hardware frequency counter.
+        The counter returns 0.0 when disabled or no valid signal is present."""
+        self.inst.write(f":MEASure:COUNter:SOURce CHANnel{channel}")
+        time.sleep(0.5)   # let the counter accumulate at least one gate window
+        val = self._query_float(":MEASure:COUNter:VALue?")
+        return val if (val is not None and val > 0) else None
 
     def vpp(self, channel: int) -> float | None:
         """Peak-to-peak voltage in V."""
