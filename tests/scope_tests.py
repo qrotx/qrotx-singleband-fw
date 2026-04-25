@@ -136,9 +136,9 @@ class Scope:
         Timer A (~7 MHz RF, CH1/CH2) and Timer C (~200 kHz buck, CH3/CH4).
         """
         period_s    = 1.0 / freq_hz
-        # Timebase: show approximately 4 complete periods.
-        # 4 × T / 12 horizontal divs → T/3 per div.
-        time_per_div = period_s / 3.0
+        # Timebase: show approximately 8 complete periods.
+        # 8 × T / 12 horizontal divs → T/1.5 per div.
+        time_per_div = period_s / 1.5
         self.inst.write(f":TIMebase:SCALe {time_per_div:.3e}")
         self.inst.write(":TIMebase:OFFSet 0")
         self.inst.write(":TIMebase:MODE MAIN")
