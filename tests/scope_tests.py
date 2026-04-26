@@ -54,6 +54,15 @@ VPP_MAX     = 3.6            # V  — maximum (3.3 V + headroom)
 PHASE_TOL   = 15.0           # degrees
 DUTY_TOL    = 3.0            # percent
 
+# Dead-time configuration
+# Both timers use DTPRSC=0 → fDTG = fHRCK * 8.
+# Timer C sign = POSITIVE (gap between transitions).
+# Timer A sign = NEGATIVE (overlap between transitions).
+TIMC_DT_NS     = 10 / (SYSCLK_HZ * 8) * 1e9
+TIMA_DT_NS     = 3  / (SYSCLK_HZ * 8) * 1e9
+TIMC_DT_TOL_NS = 150.0  # ± ns for Timer C (large DT, scope-resolvable)
+TIMA_DT_TOL_NS = 4.0    # ± ns for Timer A (DT near DS1054Z resolution limit)
+
 # ---------------------------------------------------------------------------
 # Scope wrapper
 # ---------------------------------------------------------------------------
@@ -126,29 +135,28 @@ class Scope:
 
         print("Scope prepared: channels configured, awaiting timebase")
 
-    def set_timebase(self, freq_hz: float, trigger_ch: int = 1):
+    def set_timebase(self, freq_hz: float, trigger_ch: int = 1, periods: float = 8):
         """
         Set timebase and trigger source, then start acquisition.
         Uses *OPC? to block until the scope is fully settled before returning.
 
-        Call once after prepare() with the Timer A frequency from the firmware
-        constants.  Call again between test stages when switching between
-        Timer A (~7 MHz RF, CH1/CH2) and Timer C (~200 kHz buck, CH3/CH4).
+        periods controls how many complete signal periods fill the 12-division
+        screen.  Default 8 gives a good overview; use periods=1 for maximum
+        resolution (one period fills the screen, useful for pulse-width accuracy).
         """
-        period_s    = 1.0 / freq_hz
-        # Timebase: show approximately 8 complete periods.
-        # 8 × T / 12 horizontal divs → T/1.5 per div.
-        time_per_div = period_s / 1.5
+        period_s     = 1.0 / freq_hz
+        time_per_div = period_s * periods / 12
         self.inst.write(f":TIMebase:SCALe {time_per_div:.3e}")
         self.inst.write(":TIMebase:OFFSet 0")
         self.inst.write(":TIMebase:MODE MAIN")
         self.inst.write(f":TRIGger:EDGe:SOURce CHANnel{trigger_ch}")
+        self.inst.write(":TRIGger:EDGe:SLOPe POSitive")
         self.inst.write(":TRIGger:EDGe:LEVel 1.65")
         self.inst.write(":RUN")
         self.inst.query("*OPC?")
         time.sleep(5)
         print(f"  Scope timebase → {freq_hz/1e3:.2f} kHz, "
-              f"{time_per_div*1e6:.3f} µs/div, trigger CH{trigger_ch}")
+              f"{time_per_div*1e6:.3f} µs/div ({periods} period(s)), trigger CH{trigger_ch}")
 
     # ------------------------------------------------------------------
     # Measurements
@@ -192,6 +200,30 @@ class Scope:
         self.inst.write(f":MEASure:ITEM RPHase,CHANnel{source},CHANnel{ref}")
         time.sleep(0.5)
         return self._query_float(f":MEASure:ITEM? RPHase,CHANnel{source},CHANnel{ref}")
+
+    def pulsewidth(self, channel: int) -> float | None:
+        """Positive pulse width in seconds.
+        Retries up to 5 s because the first query after enabling the measurement
+        often returns 9.9E+37."""
+        self.inst.write(f":MEASure:ITEM PWIDth,CHANnel{channel}")
+        for _ in range(10):
+            time.sleep(0.5)
+            val = self._query_float(f":MEASure:ITEM? PWIDth,CHANnel{channel}")
+            if val is not None:
+                return val
+        return None
+
+    def neg_pulsewidth(self, channel: int) -> float | None:
+        """Negative pulse width in seconds.
+        Retries up to 5 s because the first query after enabling the measurement
+        often returns 9.9E+37."""
+        self.inst.write(f":MEASure:ITEM NWIDth,CHANnel{channel}")
+        for _ in range(10):
+            time.sleep(0.5)
+            val = self._query_float(f":MEASure:ITEM? NWIDth,CHANnel{channel}")
+            if val is not None:
+                return val
+        return None
 
     def wait_triggered(self, timeout_s: float = 5.0) -> bool:
         """Return True once the scope reports a triggered (TD) state."""
@@ -534,6 +566,73 @@ def test_state5_phase_step(scope: Scope, fw: FirmwareRunner,
         check("CH1 duty cycle", False, "no measurement")
 
 
+def test_dead_time(scope: Scope,
+                   timer_a_hz: float, timerc_hz: float,
+                   step: bool = False) -> None:
+    """State 1 — verify HRTIM dead-time via positive and negative pulse-width measurements.
+
+    For each output the expected pulse widths are:
+        PW_positive ≈ T/2 − DT
+        PW_negative ≈ T/2 + DT
+    where T is the timer period and DT is the configured dead-time.
+
+    Called while State 1 is still active (within HOLD_MS).
+    """
+    print("\n=== Dead-time verification (State 1) ===")
+    t_c = 1.0 / timerc_hz
+    t_a = 1.0 / timer_a_hz
+
+    # ------------------------------------------------------------------
+    # Timer C — CH3 and CH4, positive dead-time (TIMC_DT_NS).
+    # ------------------------------------------------------------------
+    print("  -- Timer C (CH3/CH4) --")
+    scope.set_timebase(timerc_hz, trigger_ch=3, periods=1)
+    _step_pause(step, "Timer C: measuring CH3/CH4 pulse widths")
+
+    exp_pw_pos_c = t_c / 2 - TIMC_DT_NS * 1e-9
+    exp_pw_neg_c = t_c / 2 + TIMC_DT_NS * 1e-9
+    for ch in (3, 4):
+        pw_pos = scope.pulsewidth(ch)
+        pw_neg = scope.neg_pulsewidth(ch)
+        if pw_pos is not None:
+            check(f"CH{ch} positive PW ≈ {exp_pw_pos_c*1e9:.0f} ns",
+                  abs(pw_pos - exp_pw_pos_c) < TIMC_DT_TOL_NS * 1e-9,
+                  f"{pw_pos*1e9:.0f} ns")
+        else:
+            check(f"CH{ch} positive PW", False, "no measurement")
+        if pw_neg is not None:
+            check(f"CH{ch} negative PW ≈ {exp_pw_neg_c*1e9:.0f} ns",
+                  abs(pw_neg - exp_pw_neg_c) < TIMC_DT_TOL_NS * 1e-9,
+                  f"{pw_neg*1e9:.0f} ns")
+        else:
+            check(f"CH{ch} negative PW", False, "no measurement")
+
+    # ------------------------------------------------------------------
+    # Timer A — CH1 and CH2, negative dead-time / overlap (TIMA_DT_NS).
+    # ------------------------------------------------------------------
+    print("  -- Timer A (CH1/CH2) --")
+    scope.set_timebase(timer_a_hz, trigger_ch=1, periods=1)
+    _step_pause(step, "Timer A: measuring CH1/CH2 pulse widths")
+
+    exp_pw_pos_a = t_a / 2 + TIMA_DT_NS * 1e-9
+    exp_pw_neg_a = t_a / 2 - TIMA_DT_NS * 1e-9
+    for ch in (1, 2):
+        pw_pos = scope.pulsewidth(ch)
+        pw_neg = scope.neg_pulsewidth(ch)
+        if pw_pos is not None:
+            check(f"CH{ch} positive PW ≈ {exp_pw_pos_a*1e9:.1f} ns",
+                  abs(pw_pos - exp_pw_pos_a) < TIMA_DT_TOL_NS * 1e-9,
+                  f"{pw_pos*1e9:.1f} ns")
+        else:
+            check(f"CH{ch} positive PW", False, "no measurement")
+        if pw_neg is not None:
+            check(f"CH{ch} negative PW ≈ {exp_pw_neg_a*1e9:.1f} ns",
+                  abs(pw_neg - exp_pw_neg_a) < TIMA_DT_TOL_NS * 1e-9,
+                  f"{pw_neg*1e9:.1f} ns")
+        else:
+            check(f"CH{ch} negative PW", False, "no measurement")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -594,6 +693,7 @@ def main():
 
     try:
         test_state1_frequency(scope, fw, timer_a_hz, timerc_hz, args.step)
+        test_dead_time(scope, timer_a_hz, timerc_hz, args.step)
         test_state2_tc_low_duty(scope, fw, timerc_period, timerc_hz, args.step)
         test_state3_tc_full_duty(scope, fw, timerc_period, timerc_hz, args.step)
         test_state4_phase_reference(scope, fw, timer_a_hz, args.step)

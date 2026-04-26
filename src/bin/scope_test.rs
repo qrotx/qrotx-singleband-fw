@@ -45,11 +45,12 @@ use hrtim::PwmSample;
 const AMPLITUDE: u32 = TIMERC_PERIOD / 2;
 
 // Time the scope has to acquire and measure each state (milliseconds).
-// Budget: scope *RST (~2.5 s) + settle (1.5 s) + measurements (~4 s)
-// plus user inspection time when running with --step.
+// Budget for State 1 (the largest): frequency measurements (~14 s) +
+// dead-time verification (~12 s) + step-mode pauses (user-dependent).
+// States 2–5 need ~10 s each (one duty/phase measurement + timebase settle).
 // Increase this if measurements time out or if you need more time to inspect
-// the scope screen; decrease it (minimum ~10 s) for unattended runs.
-const HOLD_MS: u32 = 30_000;
+// the scope screen during --step runs.
+const HOLD_MS: u32 = 45_000;
 
 // ---------------------------------------------------------------------------
 // Helpers

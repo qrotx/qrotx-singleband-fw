@@ -257,11 +257,15 @@ coordinates scope measurements at each of five firmware test states:
 
 | State | Settings | Scope measurement |
 |---|---|---|
-| 1 | Nominal (ta_cmp1=PWM_PERIOD/2, full amplitude) | Frequency on all 4 channels |
+| 1 | Nominal (ta_cmp1=PWM_PERIOD/2, full amplitude) | Frequency on all 4 channels; dead-time verification |
 | 2 | Low amplitude (tc_cmp1=AMPLITUDE/4) | Timer C (CH3) duty cycle |
 | 3 | Full amplitude (tc_cmp1=AMPLITUDE) | Timer C (CH3) duty cycle |
 | 4 | Phase reference (ta_cmp1=0) | CH1/CH2 complementary; record CH1 duty |
 | 5 | Phase step (ta_cmp1=PWM_PERIOD/4) | CH1 duty shifts +25 % vs State 4 |
+
+Dead-time is verified during State 1 by measuring the positive and negative pulse
+widths of each channel.  Expected: `PW+ ≈ T/2 − DT` and `PW− ≈ T/2 + DT`,
+where `DT` is `TIMC_DT_NS` / `TIMA_DT_NS` as defined in `tests/scope_tests.py`.
 
 The scope is fully configured by the script (channels, timebase, trigger) —
 no manual scope setup is required.
