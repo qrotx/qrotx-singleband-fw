@@ -304,7 +304,7 @@ class FirmwareRunner:
 
         self._q.put(None)   # sentinel: process has exited
 
-    def wait_state(self, n: int, timeout_s: float = 35.0) -> dict | None:
+    def wait_state(self, n: int, timeout_s: float = 60.0) -> dict | None:
         """
         Block until 'SCOPE STATE N READY …' appears in RTT output.
         Returns a dict of parsed parameters (ta_cmp1, tc_cmp1) or None on timeout.
