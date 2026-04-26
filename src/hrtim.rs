@@ -305,9 +305,9 @@ pub fn init() {
 
     // Negative dead-time (overlap): both MOSFETs on simultaneously for
     // zero-voltage switching in the current-mode class-D bridge.
-    // DTPRSC=3 (×8 DT resolution), rising = 3 ticks, falling = 3 ticks.
+    // DTPRSC=0 (×8 DT resolution), rising = 3 ticks, falling = 3 ticks.
     hrtim.tim(0).dt().write(|w| {
-        w.set_dtprsc(3);
+        w.set_dtprsc(0);
         w.set_dtr(3);
         w.set_sdtr(Sdt::NEGATIVE);
         w.set_dtf(3);
@@ -367,9 +367,9 @@ pub fn init() {
     hrtim.tim(2).dier().modify(|w| w.set_repde(true));
 
     // Positive dead-time (normal: both outputs inactive during transition).
-    // DTPRSC=3 (×8), rising = 10 ticks, falling = 10 ticks.
+    // DTPRSC=0 (×8 DT resolution), rising = 10 ticks, falling = 10 ticks.
     hrtim.tim(2).dt().write(|w| {
-        w.set_dtprsc(3);
+        w.set_dtprsc(0);
         w.set_dtr(10);
         w.set_sdtr(Sdt::POSITIVE);
         w.set_dtf(10);
