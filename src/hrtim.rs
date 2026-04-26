@@ -6,19 +6,27 @@
 // Hardware topology:
 //
 //   Master timer  period = PWM_PERIOD  prescaler = MUL32 (CKPSC=0)  continuous
-//                 CMP1   = PWM_PERIOD/2  → resets Timer B at 180°
+//                 CMP1   = PWM_PERIOD/2  → resets Timer E at 180°
 //
 //   Timer A       period = PWM_PERIOD  prescaler = MUL32 (CKPSC=0)  continuous
-//                 Reset by: Master period (→ 0° phase)
-//                 CMP1/CMP2 updated by DMA burst (phase control for class-D bridge)
+//                 Fixed CMP1 = PWM_PERIOD/4  (SET  TA1)
+//                 Fixed CMP2 = 3×PWM_PERIOD/4  (RESET TA1)
+//                 Reset by: Timer D CMP1 event (0° reference)
+//                           Timer E CMP1 event (180° reference)
 //                 Dead-time: negative sign (overlap), MUL8 prescaler, 3 ticks R+F
-//                 TA1 (PA8): Set on CMP1 | TimerB-CMP2;  Reset on CMP2 | TimerB-CMP1
+//                 TA1 (PA8): Set on CMP1;  Reset on CMP2
 //                 TA2 (PA9): Set/Reset = NONE → driven entirely by dead-time unit
 //
-//   Timer B       period = PWM_PERIOD  prescaler = MUL32 (CKPSC=0)  continuous
-//                 Reset by: Master CMP1 (→ 180° phase, offset from Timer A)
-//                 CMP1/CMP2 updated by DMA burst
-//                 No outputs.  Provides cross-coupling trigger events to Timer A.
+//   Timer D       period = PWM_PERIOD  prescaler = MUL32 (CKPSC=0)  continuous
+//                 Reset by: Master period (→ 0° phase reference)
+//                 CMP1 updated by DMA burst → modulates Timer A reset phase (0° side)
+//                 No outputs.
+//
+//   Timer E       period = PWM_PERIOD  prescaler = MUL32 (CKPSC=0)  continuous
+//                 Reset by: Master CMP1 (→ 180° phase reference)
+//                 CMP1 updated by DMA burst → modulates Timer A reset phase (180° side)
+//                 Initial CMP1 = PWM_PERIOD×3/4 (= PWM_PERIOD/4 + PWM_PERIOD/2)
+//                 No outputs.
 //
 //   Timer C       period = TIMERC_PERIOD (850)  prescaler = DIV1 (CKPSC=5) → ~200 kHz
 //                 Runs freely (no reset from master)
@@ -28,8 +36,6 @@
 //                 TC2 (PB13): Set/Reset = NONE → driven by dead-time unit
 //                 Preload + RepUpdate enabled; DIER.REPDE = 1 (DMA on REP)
 //
-//   Timer D       removed — not required.
-//
 // DMA buffer layout
 // -----------------
 // One double-buffer in SRAM1 (ping-pong, half-transfer ISR):
@@ -37,19 +43,17 @@
 //   HRTIM_BUF  [2 × FRAME_SAMPLES] PwmSample  — DMA1_CH5 → HRTIM BDMADR
 //   ADC_BUF    [2 × FRAME_SAMPLES] u16         — ADC1 → DMA1_CH1 (configured in adc.rs)
 //
-// Each PwmSample is 5 × u32 = 20 bytes written to BDMADR in one DMA burst per
+// Each PwmSample is 3 × u32 = 12 bytes written to BDMADR in one DMA burst per
 // Timer-C period (every ~5 µs at 200 kHz).  The HRTIM burst DMA routing (BDTxUPR)
-// distributes the 5 words to:
-//   Word 0  → Timer A CMP1
-//   Word 1  → Timer A CMP2
-//   Word 2  → Timer B CMP1
-//   Word 3  → Timer B CMP2
-//   Word 4  → Timer C CMP1
+// distributes the 3 words to:
+//   Word 0  → Timer C CMP1
+//   Word 1  → Timer D CMP1
+//   Word 2  → Timer E CMP1
 //
 // DMA1_CH5 configuration (performed in adc.rs / DMA sprint):
 //   Source : HRTIM_BUF (memory, word, address increment)
 //   Dest   : HRTIM1.BDMADR (peripheral, word, no increment)
-//   Length : DMA_BUF_LEN × 5  words  (whole double-buffer)
+//   Length : DMA_BUF_LEN × 3  words  (whole double-buffer)
 //   Mode   : circular
 //   Request: Timer C REP event (DIER.REPDE enabled here)
 
@@ -61,23 +65,21 @@ use crate::config::{FRAME_SAMPLES, PWM_PERIOD, TIMERC_PERIOD};
 // ---------------------------------------------------------------------------
 // DMA buffer element: one 200 kHz tick worth of HRTIM compare values.
 // Must be repr(C) and word-aligned so that the DMA can stream it directly
-// into HRTIM1.BDMADR as five consecutive 32-bit words.
+// into HRTIM1.BDMADR as three consecutive 32-bit words.
 // ---------------------------------------------------------------------------
 
-/// Five HRTIM compare values written per Timer-C period via burst DMA.
+/// Three HRTIM compare values written per Timer-C period via burst DMA.
 ///
 /// Layout must match the BDTxUPR configuration exactly:
-///   bdtupr(0): CMP1+CMP2 of Timer A   → words 0, 1
-///   bdtupr(1): CMP1+CMP2 of Timer B   → words 2, 3
-///   bdtupr(2): CMP1       of Timer C  → word 4
+///   bdtupr(2): CMP1 of Timer C  → word 0
+///   bdtupr(3): CMP1 of Timer D  → word 1
+///   bdtupr(4): CMP1 of Timer E  → word 2
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct PwmSample {
-    pub tim_a_cmp1: u32, // Timer A CMP1 — leading edge phase (0°+φ)
-    pub tim_a_cmp2: u32, // Timer A CMP2 — trailing edge phase (180°+φ)
-    pub tim_b_cmp1: u32, // Timer B CMP1 — leading edge phase (0°+φ, B is 180° shifted)
-    pub tim_b_cmp2: u32, // Timer B CMP2 — trailing edge phase (180°+φ, B frame)
-    pub tim_c_cmp1: u32, // Timer C CMP1 — buck converter duty cycle (0 = 0 %, TIMERC_PERIOD = 100 %)
+    pub tim_c_cmp1: u32, // Timer C CMP1 — buck converter duty cycle
+    pub tim_d_cmp1: u32, // Timer D CMP1 — phase reset trigger (0° reference)
+    pub tim_e_cmp1: u32, // Timer E CMP1 — phase reset trigger (180° reference, = tim_d_cmp1 + PWM_PERIOD/2)
 }
 
 // ---------------------------------------------------------------------------
@@ -86,14 +88,12 @@ pub struct PwmSample {
 const DMA_BUF_LEN: usize = FRAME_SAMPLES * 2;
 
 /// HRTIM burst-DMA double-buffer in SRAM1.
-/// Each element is one PwmSample (5 × u32 = 20 bytes).
+/// Each element is one PwmSample (3 × u32 = 12 bytes).
 /// Loaded to HRTIM1.BDMADR at 200 kHz by DMA1_CH5 (configured in adc.rs).
 static mut HRTIM_BUF: [PwmSample; DMA_BUF_LEN] = [PwmSample {
-    tim_a_cmp1: 0,
-    tim_a_cmp2: 0,
-    tim_b_cmp1: 0,
-    tim_b_cmp2: 0,
     tim_c_cmp1: 0,
+    tim_d_cmp1: 0,
+    tim_e_cmp1: 0,
 }; DMA_BUF_LEN];
 
 /// Audio ADC samples (u16, 12-bit right-aligned).
@@ -153,7 +153,7 @@ pub fn adc_buf_ptr() -> *mut u16 {
 }
 
 /// Raw pointer to the start of HRTIM_BUF for DMA configuration.
-/// The buffer is repr(C) PwmSample (5 × u32); cast to *mut u32 for DMA word transfers.
+/// The buffer is repr(C) PwmSample (3 × u32); cast to *mut u32 for DMA word transfers.
 pub fn hrtim_buf_ptr() -> *mut u32 {
     core::ptr::addr_of_mut!(HRTIM_BUF) as *mut u32
 }
@@ -174,14 +174,14 @@ pub fn hrtim_buf_ptr() -> *mut u32 {
 ///   2. Configure output GPIO pins as AF13 (PA8/PA9 = Timer A, PB12/PB13 = Timer C).
 ///   3. Run DLL calibration and wait for lock.
 ///   4. ADC trigger 1: Timer C period event, update source = Timer C.
-///   5. Burst DMA routing (BDTxUPR): A[CMP1,CMP2], B[CMP1,CMP2], C[CMP1].
+///   5. Burst DMA routing (BDTxUPR): C[CMP1], D[CMP1], E[CMP1].
 ///   6. Master timer: period = PWM_PERIOD, CMP1 = PWM_PERIOD/2, MUL32, continuous.
-///   7. Timer A: period, CMP1/2, reset from Master period (0°), negative dead-time.
-///      TA1 set/reset sources with Timer B cross-coupling.
-///   8. Timer B: period, CMP1/2, reset from Master CMP1 (180°), no dead-time.
-///   9. Timer C: period = TIMERC_PERIOD, DIV1, preload + REP DMA, positive dead-time.
-///  10. Fill HRTIM_BUF with safe initial values.
-///  11. Start Master + Timer A/B/C (outputs still disabled).
+///   7. Timer A: fixed CMP1/CMP2, reset from Timer D and E CMP1 events, negative dead-time.
+///   8. Timer D: period, CMP1, reset from Master period (0° reference), no outputs.
+///   9. Timer E: period, CMP1, reset from Master CMP1 (180° reference), no outputs.
+///  10. Timer C: period = TIMERC_PERIOD, DIV1, preload + REP DMA, positive dead-time.
+///  11. Fill HRTIM_BUF with safe initial values.
+///  12. Start Master + Timer A/C/D/E (outputs still disabled).
 pub fn init() {
     use embassy_stm32::pac;
     use embassy_stm32::pac::gpio::vals::{Moder, Ospeedr};
@@ -262,15 +262,15 @@ pub fn init() {
     // ------------------------------------------------------------------
     // 5. Burst DMA update register: which timer CMP registers are written
     //    per burst word.  The DMA transfers PwmSample words in order:
-    //    [timA_cmp1, timA_cmp2, timB_cmp1, timB_cmp2, timC_cmp1].
+    //    [timC_cmp1, timD_cmp1, timE_cmp1].
     // ------------------------------------------------------------------
-    hrtim.bdtupr(0).write(|w| { w.set_cmp(0, true); w.set_cmp(1, true); }); // Timer A: CMP1+CMP2
-    hrtim.bdtupr(1).write(|w| { w.set_cmp(0, true); w.set_cmp(1, true); }); // Timer B: CMP1+CMP2
-    hrtim.bdtupr(2).write(|w|   w.set_cmp(0, true));                         // Timer C: CMP1 only
+    hrtim.bdtupr(2).write(|w|   w.set_cmp(0, true));        // Timer C: CMP1
+    hrtim.bdtupr(3).write(|w|   w.set_cmp(0, true));        // Timer D: CMP1
+    hrtim.bdtupr(4).write(|w|   w.set_cmp(0, true));        // Timer E: CMP1
 
     // ------------------------------------------------------------------
     // 6. Master timer: MUL32 (CKPSC=0), continuous, period = PWM_PERIOD.
-    //    CMP1 = PWM_PERIOD/2 → resets Timer B at 180°.
+    //    CMP1 = PWM_PERIOD/2 → resets Timer E at 180°.
     //
     //    CKPSC encoding (STM32G4 HAL / RM0440):
     //      0 = MUL32  → fCOUNT = fHRTIM × 32 (high-resolution, ≈ 5.376 GHz at 168 MHz)
@@ -286,22 +286,24 @@ pub fn init() {
 
     // ------------------------------------------------------------------
     // 7. Timer A (index 0): same clock/period as Master.
-    //    Reset from Master period → Timer A starts at 0° each master cycle.
-    //    Cross-coupling with Timer B via timevnt events in setr/rstr:
-    //      timevnt[0] = Timer A Event 1 = Timer B CMP1 (RM0440 Table 215)
-    //      timevnt[1] = Timer A Event 2 = Timer B CMP2
+    //    Fixed CMP1 = PWM_PERIOD/4 (SET TA1), fixed CMP2 = 3×PWM_PERIOD/4 (RESET TA1).
+    //    Counter reset by Timer D CMP1 (timevnt[4] = Timer A Event 5)
+    //                 and Timer E CMP1 (timevnt[6] = Timer A Event 7).
     // ------------------------------------------------------------------
     hrtim.tim(0).cr().write(|w| {
         w.set_ckpsc(0);   // MUL32: fCOUNT = fHRTIM × 32
         w.set_cont(true);
     });
     hrtim.tim(0).per().write(|w| w.set_per(PWM_PERIOD as u16));
-    // Initial CMP values: half duty at 90° / 270° — will be updated by DMA.
     hrtim.tim(0).cmp(0).write(|w| w.set_cmp((PWM_PERIOD / 4) as u16));
     hrtim.tim(0).cmp(1).write(|w| w.set_cmp((PWM_PERIOD * 3 / 4) as u16));
 
-    // Timer A reset trigger: Master period event.
-    hrtim.tim(0).rst().write(|w| w.set_mstper(true));
+    // Counter reset: Timer D CMP1 (tcmp1[2]) + Timer E CMP1 (tcmp1[3]).
+    // For Timer A's rst register, tcmp1 indices map to: 0=TB, 1=TC, 2=TD, 3=TE.
+    hrtim.tim(0).rst().write(|w| {
+        w.set_tcmp1(2, true); // Timer D CMP1
+        w.set_tcmp1(3, true); // Timer E CMP1
+    });
 
     // Negative dead-time (overlap): both MOSFETs on simultaneously for
     // zero-voltage switching in the current-mode class-D bridge.
@@ -314,15 +316,9 @@ pub fn init() {
         w.set_sdtf(Sdt::NEGATIVE);
     });
 
-    // TA1 (PA8) set/reset: CMP1 | TimerB-CMP2  /  CMP2 | TimerB-CMP1.
-    hrtim.tim(0).setr(0).write(|w| {
-        w.set_cmp(0, true);     // own CMP1
-        w.set_timevnt(1, true); // Timer A event 2 = Timer B CMP2
-    });
-    hrtim.tim(0).rstr(0).write(|w| {
-        w.set_cmp(1, true);     // own CMP2
-        w.set_timevnt(0, true); // Timer A event 1 = Timer B CMP1
-    });
+    // TA1 (PA8): set on own CMP1, reset on own CMP2
+    hrtim.tim(0).setr(0).write(|w| w.set_cmp(0, true));  // SET on own CMP1
+    hrtim.tim(0).rstr(0).write(|w| w.set_cmp(1, true));  // RESET on own CMP2
     // TA2 (PA9): no set/reset sources — waveform generated by dead-time unit.
     hrtim.tim(0).setr(1).write(|_w| {});
     hrtim.tim(0).rstr(1).write(|_w| {});
@@ -331,23 +327,31 @@ pub fn init() {
     hrtim.tim(0).outr().modify(|w| w.set_dten(true));
 
     // ------------------------------------------------------------------
-    // 8. Timer B (index 1): sync reference for Timer A cross-coupling.
-    //    Reset from Master CMP1 → 180° offset from Timer A.
-    //    No outputs.
+    // 8. Timer D (index 3): phase reset reference at 0°.
+    //    No outputs. CMP1 updated by DMA burst to modulate Timer A reset phase.
     // ------------------------------------------------------------------
-    hrtim.tim(1).cr().write(|w| {
+    hrtim.tim(3).cr().write(|w| {
         w.set_ckpsc(0);   // MUL32: fCOUNT = fHRTIM × 32
         w.set_cont(true);
     });
-    hrtim.tim(1).per().write(|w| w.set_per(PWM_PERIOD as u16));
-    hrtim.tim(1).cmp(0).write(|w| w.set_cmp((PWM_PERIOD / 4) as u16));
-    hrtim.tim(1).cmp(1).write(|w| w.set_cmp((PWM_PERIOD * 3 / 4) as u16));
-
-    // Timer B reset trigger: Master CMP1 event (mstcmp index 0 = CMP1).
-    hrtim.tim(1).rst().write(|w| w.set_mstcmp(0, true));
+    hrtim.tim(3).per().write(|w| w.set_per(PWM_PERIOD as u16));
+    hrtim.tim(3).cmp(0).write(|w| w.set_cmp((PWM_PERIOD / 4) as u16));
+    hrtim.tim(3).rst().write(|w| w.set_mstper(true)); // 0° — reset from Master period
 
     // ------------------------------------------------------------------
-    // 9. Timer C (index 2): independent 200 kHz buck-converter PWM.
+    // 9. Timer E (index 4): phase reset reference at 180°.
+    //    No outputs. CMP1 updated by DMA burst (= Timer D CMP1 + PWM_PERIOD/2).
+    // ------------------------------------------------------------------
+    hrtim.tim(4).cr().write(|w| {
+        w.set_ckpsc(0);   // MUL32
+        w.set_cont(true);
+    });
+    hrtim.tim(4).per().write(|w| w.set_per(PWM_PERIOD as u16));
+    hrtim.tim(4).cmp(0).write(|w| w.set_cmp((PWM_PERIOD * 3 / 4) as u16));
+    hrtim.tim(4).rst().write(|w| w.set_mstcmp(0, true)); // 180° — reset from Master CMP1
+
+    // ------------------------------------------------------------------
+    // 10. Timer C (index 2): independent 200 kHz buck-converter PWM.
     //    DIV1 (CKPSC=5) → fCOUNT = fHRTIM ≈ 168 MHz, period = 850 ticks.
     //    Preload enabled; CMP1 register is double-buffered and updated on REP.
     //    REP counter = 0 → REP event every period.
@@ -387,15 +391,13 @@ pub fn init() {
     hrtim.tim(2).outr().modify(|w| w.set_dten(true));
 
     // ------------------------------------------------------------------
-    // 10. Fill HRTIM_BUF with safe initial values (no RF output, near-zero
+    // 11. Fill HRTIM_BUF with safe initial values (no RF output, near-zero
     //     duty on Timer C) before DMA starts streaming.
     // ------------------------------------------------------------------
     let safe = PwmSample {
-        tim_a_cmp1: (PWM_PERIOD / 4) as u32,
-        tim_a_cmp2: (PWM_PERIOD * 3 / 4) as u32,
-        tim_b_cmp1: (PWM_PERIOD / 4) as u32,
-        tim_b_cmp2: (PWM_PERIOD * 3 / 4) as u32,
-        tim_c_cmp1: 1,   // near-zero duty; 0 risks CMP=period alias on some HRTIM revisions
+        tim_c_cmp1: 1,
+        tim_d_cmp1: (PWM_PERIOD / 4) as u32,
+        tim_e_cmp1: (PWM_PERIOD * 3 / 4) as u32,
     };
     #[allow(static_mut_refs)]
     unsafe {
@@ -405,14 +407,15 @@ pub fn init() {
     }
 
     // ------------------------------------------------------------------
-    // 11. Start all configured timers (outputs remain disabled until
+    // 12. Start all configured timers (outputs remain disabled until
     //     enable_outputs() is called after clock lock).
     // ------------------------------------------------------------------
     hrtim.mcr().modify(|w| {
         w.set_mcen(true);    // Master counter
         w.set_tcen(0, true); // Timer A
-        w.set_tcen(1, true); // Timer B
         w.set_tcen(2, true); // Timer C
+        w.set_tcen(3, true); // Timer D
+        w.set_tcen(4, true); // Timer E
     });
 
     info!("hrtim: init done — timers running, outputs disabled");
@@ -461,6 +464,6 @@ pub fn disable_outputs() {
 const _: () = {
     assert!(FRAME_SAMPLES > 0);
     assert!(PWM_PERIOD % 4 == 0);
-    // PwmSample must be exactly 5 × 4 = 20 bytes.
-    assert!(core::mem::size_of::<PwmSample>() == 20);
+    // PwmSample must be exactly 3 × 4 = 12 bytes.
+    assert!(core::mem::size_of::<PwmSample>() == 12);
 };
