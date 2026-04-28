@@ -307,7 +307,7 @@ class FirmwareRunner:
     def wait_state(self, n: int, timeout_s: float = 60.0) -> dict | None:
         """
         Block until 'SCOPE STATE N READY …' appears in RTT output.
-        Returns a dict of parsed parameters (ta_cmp1, tc_cmp1) or None on timeout.
+        Returns a dict of parsed parameters (ta_cmp1, tc_cmp1, td_cmp1) or None on timeout.
         """
         marker = f"SCOPE STATE {n} READY"
         deadline = time.time() + timeout_s
@@ -320,7 +320,7 @@ class FirmwareRunner:
                 return None     # firmware exited unexpectedly
             if marker in line:
                 params = {}
-                for key in ("ta_cmp1", "tc_cmp1"):
+                for key in ("ta_cmp1", "tc_cmp1", "td_cmp1"):
                     m = re.search(rf"{key}=(\d+)", line)
                     if m:
                         params[key] = int(m.group(1))
@@ -633,6 +633,71 @@ def test_dead_time(scope: Scope,
             check(f"CH{ch} negative PW", False, "no measurement")
 
 
+def test_phase_modulation(scope: Scope, fw: FirmwareRunner,
+                          pwm_period: int, timer_a_hz: float,
+                          step: bool = False) -> None:
+    """States 6-13 — Timer C reconfigured as 50 % master-locked phase reference.
+
+    TC1 (CH3) rises at the master period event (t = 0).
+    TA1 (CH1) rises at (td_cmp1 + PWM_PERIOD/4) ticks after the master period.
+
+    Expected phase of CH1 relative to CH3:
+        expected = -((td_cmp1 + PWM_PERIOD/4) % PWM_PERIOD) / PWM_PERIOD * 360 °
+
+    Critical td_cmp1 values under test:
+        0             — Timer D CMP register = 0 (compare event may not fire)
+        PWM_PERIOD/2  — te_cmp1 wraps to 0 (Timer E CMP register = 0)
+    """
+    print("\n=== Phase modulation test (States 6–13) ===")
+
+    # td_cmp1 values and their state numbers
+    phase_states = [
+        (6,  0),
+        (7,  1),
+        (8,  pwm_period // 4 - 1),
+        (9,  pwm_period // 4),
+        (10, pwm_period // 4 + 1),
+        (11, pwm_period // 2 - 1),
+        (12, pwm_period // 2),
+        (13, pwm_period // 2 + 1),
+    ]
+
+    # Set timebase once for all phase states: trigger on CH3 (phase reference).
+    scope.set_timebase(timer_a_hz, trigger_ch=3, periods=2)
+
+    for state_n, td_cmp1 in phase_states:
+        params = fw.wait_state(state_n)
+        if params is None:
+            check(f"State {state_n} reached", False, "timeout")
+            continue
+        check(f"State {state_n} reached", True)
+
+        if not scope.wait_triggered(timeout_s=5.0):
+            print(f"  WARNING: scope did not trigger on CH3 within 5 s")
+        time.sleep(0.5)
+        _step_pause(step, f"State {state_n}: td_cmp1={td_cmp1}")
+
+        # Expected phase: CH1 lags CH3 by (td_cmp1 + PWM_PERIOD/4)/PWM_PERIOD*360°.
+        raw = (td_cmp1 + pwm_period // 4) % pwm_period
+        expected_phase = -(raw / pwm_period * 360.0)
+        if expected_phase <= -180.0:
+            expected_phase += 360.0
+
+        measured = scope.phase(1, 3)
+        if measured is not None:
+            # Wrap-around-aware error (handles the ±180° boundary).
+            err = abs(measured - expected_phase)
+            if err > 180.0:
+                err = 360.0 - err
+            check(
+                f"State {state_n} CH1 phase vs CH3 (td_cmp1={td_cmp1}) ≈ {expected_phase:.1f}°",
+                err < PHASE_TOL,
+                f"{measured:.1f}°  expected {expected_phase:.1f}°",
+            )
+        else:
+            check(f"State {state_n} CH1 phase vs CH3", False, "no measurement")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -698,6 +763,7 @@ def main():
         test_state3_tc_full_duty(scope, fw, timerc_period, timerc_hz, args.step)
         test_state4_phase_reference(scope, fw, timer_a_hz, args.step)
         test_state5_phase_step(scope, fw, timer_a_hz, args.step)
+        test_phase_modulation(scope, fw, pwm_period, timer_a_hz, args.step)
         fw.wait_done()
     finally:
         fw.stop()
