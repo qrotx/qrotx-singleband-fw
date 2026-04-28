@@ -50,7 +50,9 @@ use embassy_stm32::rcc::{
 };
 use embassy_stm32::Config;
 
+#[allow(dead_code)]
 #[path = "../config.rs"]  mod config;
+#[allow(dead_code)]
 #[path = "../hrtim.rs"]   mod hrtim;
 #[path = "../dma.rs"]     mod dma;
 
