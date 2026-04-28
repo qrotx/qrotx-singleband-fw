@@ -107,6 +107,9 @@ pub enum ModulationMode {
     Usb,
     /// Amplitude modulation: SSB filter bypassed; carrier added to audio.
     Am,
+    /// Carrier only: constant full-amplitude carrier, no audio.  Useful for
+    /// testing RF output power, frequency, and phase without a microphone.
+    CarrierOnly,
 }
 
 /// Active modulation mode.  Change this constant to switch modes.

@@ -621,6 +621,12 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineT
             }
             // ssb_q remains zero (zero-initialised above).
         }
+        ModulationMode::CarrierOnly => {
+            // Constant full-amplitude carrier: I=1.0, Q=0.0.
+            // CORDIC yields modulus=1.0, phase=0 → maximum TX power, fixed phase.
+            ssb_i.fill(1.0);
+            // ssb_q remains zero (zero-initialised above).
+        }
     }
     let t4 = cyccnt();
 
