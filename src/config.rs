@@ -115,6 +115,18 @@ pub enum ModulationMode {
 /// Active modulation mode.  Change this constant to switch modes.
 pub const MODULATION: ModulationMode = ModulationMode::Lsb;
 
+/// Stream raw audio frames to LPUART1 after 10:1 downsampling for debugging.
+///
+/// When true, stages 3–5 of the DSP pipeline are skipped and each 10-sample
+/// frame is transmitted as 10 signed 16-bit little-endian words (20 bytes).
+/// The HRTIM output is not driven while this mode is active.
+///
+/// Hardware: PA2 = LPUART1_TX (AF12), connected to the ST-Link VCP on
+/// Nucleo-G474RE.  Baud rate: 4 Mbaud (configured in uart.rs).
+///
+/// Capture with: python tools/capture_audio.py <port>
+pub const DEBUG_UART_AUDIO: bool = false;
+
 /// AM carrier level relative to full scale (0.0 = suppressed-carrier DSB,
 /// 1.0 = carrier only, no modulation).  Only meaningful when MODULATION = Am.
 ///

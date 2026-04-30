@@ -24,7 +24,7 @@
 
 use embassy_stm32::pac;
 
-use crate::config::{AM_CARRIER_LEVEL, FRAME_SAMPLES, MODULATION, ModulationMode, PWM_PERIOD, TIMERC_PERIOD};
+use crate::config::{AM_CARRIER_LEVEL, DEBUG_UART_AUDIO, FRAME_SAMPLES, MODULATION, ModulationMode, PWM_PERIOD, TIMERC_PERIOD};
 use crate::dsp_ffi::{
     ArmBiquadCascadeDf2TInstanceF32, ArmFirDecimateInstanceQ31,
     ArmFirInstanceF32, ArmFirInterpolateInstanceQ31,
@@ -437,6 +437,7 @@ pub unsafe fn cordic_modulus_vec(
 /// real numbers; if DWT is off all fields are zero.  The DSP task drops the
 /// return value so the compiler eliminates the dead arithmetic at -Ofast.
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct PipelineTimings {
     pub stage1_adc_to_q31:   u32,  // u16 → Q31 conversion (100 samples)
     pub stage2_fir_decimate:  u32,  // 10:1 FIR decimation (CMSIS-DSP Q31)
@@ -551,6 +552,27 @@ unsafe fn process_half(adc_in: &[u16], hrtim_out: &mut [PwmSample]) -> PipelineT
         FRAME_SAMPLES as u32,
     );
     let t2 = cyccnt();
+
+    // --- DEBUG_UART_AUDIO: stream decimated samples and skip stages 3–5 ---
+    if DEBUG_UART_AUDIO {
+        // Truncate Q31 → i16 by keeping the upper 16 bits.
+        let mut buf = [0i16; DECIMATED_LEN];
+        for (dst, &src) in buf.iter_mut().zip(decimated.iter()) {
+            *dst = (src >> 16) as i16;
+        }
+        // Safety: i16 has no invalid bit patterns; slice covers exactly the array.
+        let bytes = core::slice::from_raw_parts(
+            buf.as_ptr() as *const u8,
+            DECIMATED_LEN * core::mem::size_of::<i16>(),
+        );
+        crate::uart::transmit(bytes);
+        return PipelineTimings {
+            stage1_adc_to_q31:  t1.wrapping_sub(t_start),
+            stage2_fir_decimate: t2.wrapping_sub(t1),
+            total:               t2.wrapping_sub(t_start),
+            ..Default::default()
+        };
+    }
 
     // --- Stage 3a: Q31 → f32 ---
     let mut audio = [0.0f32; DECIMATED_LEN];

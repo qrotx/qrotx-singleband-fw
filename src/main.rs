@@ -46,6 +46,7 @@ mod hrtim;
 mod si5351;
 mod tasks;
 mod transmitter;
+mod uart;
 
 use tasks::dsp::dsp_task;
 use tasks::radio::radio_task;
@@ -104,6 +105,11 @@ fn main() -> ! {
         r.apb2_pre = APBPrescaler::DIV1;
     }
     let p = embassy_stm32::init(rcc);
+
+    if config::DEBUG_UART_AUDIO {
+        uart::init();
+        info!("uart: LPUART1 initialised for audio debug streaming");
+    }
 
     info!("qrotx singleband transmitter — firmware starting");
     info!("TX freq  : {} Hz",      config::TX_FREQ_HZ);

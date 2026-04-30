@@ -55,6 +55,8 @@ use panic_probe as _;
 #[path = "../src/dsp_ffi.rs"]  mod dsp_ffi;
 #[path = "../src/dsp.rs"]      mod dsp;
 #[path = "../src/si5351.rs"]   mod si5351;
+#[allow(dead_code)]
+#[path = "../src/uart.rs"]     mod uart;
 
 use hrtim::{PROCESS_FIRST_HALF, PROCESS_SECOND_HALF};
 use config::SI5351_I2C_ADDR;
