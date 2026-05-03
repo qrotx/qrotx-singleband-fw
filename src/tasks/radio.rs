@@ -137,7 +137,7 @@ async fn start_transmit(
 
     // ----- Step 3: Switch MCU clock to external (Si5351 reference) ----------
     TxState::set(TxState::SwitchingClock);
-    match clock::switch_to_external_clock().await {
+    match clock::switch_to_external_clock() {
         Ok(()) => info!("radio: MCU running on external clock"),
         Err(e) => {
             error!("radio: clock switch failed: {:?}", e);
@@ -179,7 +179,7 @@ async fn stop_transmit(si5351: &mut Si5351<'_>, tx_enable: &mut Output<'_>) {
     info!("radio: relay released");
 
     // 4. Switch MCU back to internal clock.
-    if let Err(e) = clock::switch_to_internal_clock().await {
+    if let Err(e) = clock::switch_to_internal_clock() {
         error!("radio: clock revert failed: {:?}", e);
     }
 

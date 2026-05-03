@@ -12,6 +12,7 @@
 //
 // Tests:
 //   test_si5351_present      — I2C ACK at 0x60, status register reads OK
+//   test_si5351_clock_lock   — Si5351 CLK0 output + STM32 PLL locks, then back to HSI
 //   test_hrtim_timer_running — Timer C counter advances after init
 //   test_adc_dma_fires       — PROCESS_FIRST_HALF flag set within 2 ms
 //   test_adc_nonzero_samples — ADC buffer contains non-zero samples
@@ -55,6 +56,8 @@ use panic_probe as _;
 #[path = "../src/dsp_ffi.rs"]  mod dsp_ffi;
 #[path = "../src/dsp.rs"]      mod dsp;
 #[path = "../src/si5351.rs"]   mod si5351;
+#[allow(dead_code)]
+#[path = "../src/clock.rs"]    mod clock;
 #[allow(dead_code)]
 #[path = "../src/uart.rs"]     mod uart;
 
@@ -115,6 +118,24 @@ fn rms_q31_buf<const N: usize>(buf: &[i32; N]) -> f32 {
 fn rms_f32_buf<const N: usize>(buf: &[f32; N]) -> f32 {
     let sum: f32 = buf.iter().map(|&x| x * x).sum();
     libm::sqrtf(sum / N as f32)
+}
+
+// ---------------------------------------------------------------------------
+// Si5351 AN619 MultiSynth register encoding (mirrors si5351::ms_params_to_bytes).
+// Used by test_si5351_clock_lock to configure the chip via blocking I2C without
+// pulling in the async Si5351 driver (which uses Timer::after internally).
+// ---------------------------------------------------------------------------
+fn si5351_ms_params(a: u32, b: u32, c: u32) -> [u8; 8] {
+    let floor_bc = (128 * b) / c;
+    let p1 = 128 * a + floor_bc - 512;
+    let p2 = 128 * b - c * floor_bc;
+    let p3 = c;
+    [
+        ((p3 >> 8) & 0xFF) as u8, (p3 & 0xFF) as u8,
+        ((p1 >> 16) & 0x03) as u8, ((p1 >> 8) & 0xFF) as u8, (p1 & 0xFF) as u8,
+        (((p3 >> 12) & 0xF0) | ((p2 >> 16) & 0x0F)) as u8,
+        ((p2 >> 8) & 0xFF) as u8, (p2 & 0xFF) as u8,
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +223,79 @@ mod tests {
         defmt::assert!(val[0] & 0x80 == 0, "SYS_INIT bit still set — device not ready");
 
         info!("test_si5351_present: PASS");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Si5351 CLK0 output + STM32 PLL lock
+    //
+    // Initialises the Si5351 via the si5351.rs driver and enables CLK0 at
+    // SI5351_OUTPUT_HZ using PLL A.  Calls clock::switch_to_external_clock()
+    // and asserts it returns Ok (i.e. PLLRDY set before the 10 ms timeout).
+    // Then calls clock::switch_to_internal_clock() and asserts the same.
+    //
+    // Consumes state.i2c; tests that follow do not need I2C.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_si5351_clock_lock(state: &mut State) {
+        info!("test: Si5351 CLK0 output + STM32 PLL lock");
+
+        // --- Configure Si5351 for SI5351_OUTPUT_HZ on CLK0 via PLL A ---
+        // Crystal load: 10 pF (reg 183, bits [7:6] = 0b11).
+        state.i2c.blocking_write(config::SI5351_I2C_ADDR, &[183, 0b11 << 6])
+            .unwrap_or_else(|_| defmt::panic!("Si5351 I2C write failed"));
+
+        // Smallest even MS divider with VCO in [600, 900] MHz.
+        let target = config::SI5351_OUTPUT_HZ as u64;
+        let ms_min = ((600_000_000u64 + target - 1) / target).max(6) as u32;
+        let ms_div = if ms_min % 2 == 0 { ms_min } else { ms_min + 1 };
+        let vco_hz = config::SI5351_OUTPUT_HZ as u64 * ms_div as u64;
+
+        // PLL A fractional divider: a + b/c, c = 1_000_000.
+        let a   = (vco_hz / config::SI5351_XTAL_HZ as u64) as u32;
+        let rem = vco_hz - a as u64 * config::SI5351_XTAL_HZ as u64;
+        let c: u32 = 1_000_000;
+        let b: u32 = (rem * c as u64 / config::SI5351_XTAL_HZ as u64) as u32;
+
+        info!("Si5351: vco={} Hz ms_div={} a={} b={}", vco_hz, ms_div, a, b);
+
+        // Write MSNA registers (PLL A, base reg 26) and MS0 (CLK0 divider, base reg 42).
+        let pll_bytes = si5351_ms_params(a, b, c);
+        let ms_bytes  = si5351_ms_params(ms_div, 0, 1);
+
+        let mut buf = [0u8; 9];
+        buf[0] = 26; buf[1..9].copy_from_slice(&pll_bytes);
+        state.i2c.blocking_write(config::SI5351_I2C_ADDR, &buf)
+            .unwrap_or_else(|_| defmt::panic!("Si5351 MSNA write failed"));
+
+        // Reset PLL A (reg 177 bit 5).
+        state.i2c.blocking_write(config::SI5351_I2C_ADDR, &[177, 1 << 5])
+            .unwrap_or_else(|_| defmt::panic!("Si5351 PLL reset failed"));
+
+        buf[0] = 42; buf[1..9].copy_from_slice(&ms_bytes);
+        state.i2c.blocking_write(config::SI5351_I2C_ADDR, &buf)
+            .unwrap_or_else(|_| defmt::panic!("Si5351 MS0 write failed"));
+
+        // CLK0_CTRL reg 16: integer-mode | PLL A | MS0 src | 8 mA drive.
+        // CLK_INTEGER(bit6) | CLK_SRC_MS<<2(bits[3:2]) | CLK_DRV_8MA(bits[1:0]) = 0x4F.
+        state.i2c.blocking_write(config::SI5351_I2C_ADDR, &[16, 0x4F])
+            .unwrap_or_else(|_| defmt::panic!("Si5351 CLK0_CTRL write failed"));
+
+        // OEB reg 3: bit 0 = 0 enables CLK0; all other outputs remain disabled.
+        state.i2c.blocking_write(config::SI5351_I2C_ADDR, &[3, 0b1111_1110])
+            .unwrap_or_else(|_| defmt::panic!("Si5351 OEB write failed"));
+
+        info!("Si5351 CLK0 enabled at {} Hz", config::SI5351_OUTPUT_HZ);
+
+        // --- Switch STM32 PLL source to Si5351 CLK0 ---
+        let res = clock::switch_to_external_clock();
+        defmt::assert!(res.is_ok(), "switch_to_external_clock failed: {:?}", res);
+        info!("STM32 PLL locked to Si5351 reference");
+
+        // --- Switch back to internal HSI ---
+        let res = clock::switch_to_internal_clock();
+        defmt::assert!(res.is_ok(), "switch_to_internal_clock failed: {:?}", res);
+
+        info!("test_si5351_clock_lock: PASS");
     }
 
     // -----------------------------------------------------------------------

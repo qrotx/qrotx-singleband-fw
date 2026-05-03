@@ -17,7 +17,7 @@
 
 use defmt::{debug, error};
 use embassy_stm32::pac;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant};
 
 use crate::config::{PLL_N_IDLE, PLL_N_TX};
 
@@ -27,14 +27,14 @@ use crate::config::{PLL_N_IDLE, PLL_N_TX};
 
 /// Switch the system clock to use the external Si5351 reference.
 /// Must be called after Si5351 output is enabled and PLL is settled.
-pub async fn switch_to_external_clock() -> Result<(), ClockError> {
+pub fn switch_to_external_clock() -> Result<(), ClockError> {
     debug!("clock: switching to external (Si5351) reference");
 
     select_sysclk_source(SysclkSrc::Hsi)?;
     disable_pll()?;
     enable_hse_bypass()?;
     configure_pll(PllSource::Hse, 1, PLL_N_TX as u8, 2)?;
-    enable_pll_and_wait().await?;
+    enable_pll_and_wait()?;
     select_sysclk_source(SysclkSrc::Pll)?;
 
     debug!("clock: external clock active");
@@ -42,14 +42,14 @@ pub async fn switch_to_external_clock() -> Result<(), ClockError> {
 }
 
 /// Switch back to the internal HSI reference (call after stopping TX).
-pub async fn switch_to_internal_clock() -> Result<(), ClockError> {
+pub fn switch_to_internal_clock() -> Result<(), ClockError> {
     debug!("clock: switching back to internal HSI");
 
     select_sysclk_source(SysclkSrc::Hsi)?;
     disable_pll()?;
     disable_hse()?;
     configure_pll(PllSource::Hsi, 1, PLL_N_IDLE as u8, 2)?;
-    enable_pll_and_wait().await?;
+    enable_pll_and_wait()?;
     select_sysclk_source(SysclkSrc::Pll)?;
 
     debug!("clock: internal clock active");
@@ -182,7 +182,7 @@ fn configure_pll(src: PllSource, pllm: u8, plln: u8, pllr: u8) -> Result<(), Clo
     Ok(())
 }
 
-async fn enable_pll_and_wait() -> Result<(), ClockError> {
+fn enable_pll_and_wait() -> Result<(), ClockError> {
     let rcc = pac::RCC;
     rcc.cr().modify(|w| w.set_pllon(true));
 
@@ -195,6 +195,6 @@ async fn enable_pll_and_wait() -> Result<(), ClockError> {
             error!("clock: PLL lock timeout");
             return Err(ClockError::Timeout);
         }
-        Timer::after(Duration::from_micros(10)).await;
+        cortex_m::asm::nop();
     }
 }
