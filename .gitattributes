@@ -1,0 +1,7 @@
+# Tell GitHub Linguist that this is a Rust project.
+# Vendor the third-party C library and tool scripts so they don't affect
+# the language statistics.
+
+c_src/CMSIS-DSP/** linguist-vendored
+tools/**           linguist-documentation
+tests/**/*.py      linguist-documentation
